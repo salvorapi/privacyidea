@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 #
+#  2018-02-13 Cornelius Kölbel <cornelius.koelbel@netknights.it>
+#             Allow expired attestation certificate
 #  2017-04-18 Cornelius Kölbel <cornelius.koelbel@netknights.it>
 #             Save attestation cert info to tokeninfo
 #  2015-11-22 Cornelius Kölbel <cornelius@privacyidea.org>
@@ -39,7 +41,8 @@ from privacyidea.lib.tokens.u2f import (check_registration_data, url_decode,
                                         parse_response_data, check_response,
                                         x509name_to_string)
 from privacyidea.lib.error import ValidateError, PolicyError
-from privacyidea.lib.policy import SCOPE
+from privacyidea.lib.policy import SCOPE, GROUP
+from privacyidea.lib.utils import is_true
 import base64
 import binascii
 import json
@@ -179,7 +182,8 @@ the signatureData and clientData returned by the U2F device in the *u2fResult*:
 """
 
 IMAGES = {"yubico": "static/css/FIDO-U2F-Security-Key-444x444.png",
-          "plug-up": "static/css/plugup.jpg"}
+          "plug-up": "static/css/plugup.jpg",
+          "u2fzero.com": "static/css/u2fzero.png"}
 U2F_Version = "U2F_V2"
 
 log = logging.getLogger(__name__)
@@ -190,6 +194,7 @@ required = False
 class U2FACTION(object):
     FACETS = "u2f_facets"
     REQ = "u2f_req"
+    NO_VERIFY_CERT = "u2f_no_verify_certificate"
 
 
 class U2fTokenClass(TokenClass):
@@ -254,7 +259,12 @@ class U2fTokenClass(TokenClass):
                        U2FACTION.REQ: {
                            'type': 'str',
                            'desc': _("Only specified U2F tokens are allowed "
-                                     "to be registered.")
+                                     "to be registered."),
+                           'group': GROUP.TOKEN},
+                       U2FACTION.NO_VERIFY_CERT: {
+                           'type': 'bool',
+                           'desc': _("Do not verify the U2F attestation certificate."),
+                           'group': GROUP.TOKEN
                        }
                    }
                }
@@ -291,10 +301,12 @@ class U2fTokenClass(TokenClass):
         TokenClass.update(self, param)
         description = "U2F initialization"
         reg_data = getParam(param, "regdata")
+        verify_cert = is_true(getParam(param, "u2f.verify_cert", default=True))
         if reg_data:
             self.init_step = 2
             attestation_cert, user_pub_key, key_handle, \
-                signature, description = parse_registration_data(reg_data)
+                signature, description = parse_registration_data(reg_data,
+                                                                 verify_cert=verify_cert)
             client_data = getParam(param, "clientdata", required)
             client_data_str = url_decode(client_data)
             app_id = self.get_tokeninfo("appId", "")
@@ -392,7 +404,7 @@ class U2fTokenClass(TokenClass):
         additional ``attributes``, which are displayed in the JSON response.
         """
         options = options or {}
-        message = 'Please confirm with your U2F token ({0!s})'.format( \
+        message = u'Please confirm with your U2F token ({0!s})'.format( \
                   self.token.description)
 
         validity = int(get_from_config('DefaultChallengeValidityTime', 120))
@@ -403,7 +415,7 @@ class U2fTokenClass(TokenClass):
         challenge = geturandom(32)
         # Create the challenge in the database
         db_challenge = Challenge(self.token.serial,
-                                 transaction_id=None,
+                                 transaction_id=transactionid,
                                  challenge=binascii.hexlify(challenge),
                                  data=None,
                                  session=options.get("session"),
@@ -450,8 +462,7 @@ class U2fTokenClass(TokenClass):
             clientdata_dict = json.loads(clientdata)
             client_challenge = clientdata_dict.get("challenge")
             if challenge_url != client_challenge:
-                raise ValidateError("Challenge mismatch. The U2F key did not "
-                                    "send the original challenge.")
+                return ret
             if clientdata_dict.get("typ") != "navigator.id.getAssertion":
                 raise ValidateError("Incorrect navigator.id")
             #client_origin = clientdata_dict.get("origin")

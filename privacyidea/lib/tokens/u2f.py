@@ -77,7 +77,7 @@ def parse_response_data(resp_data):
     return user_presence, counter, signature
 
 
-def parse_registration_data(reg_data):
+def parse_registration_data(reg_data, verify_cert=True):
     """
     returns the parsed registration data in a tuple
     attestation_cert, user_pub_key, key_handle, signature, description
@@ -93,6 +93,7 @@ def parse_registration_data(reg_data):
     -20150514/fido-u2f-raw-message-formats.html#registration-messages
 
     :param reg_data: base64 encoded registration data
+    :param verify_cert: whether the attestation certificate should be verified
     :return: tuple
     """
     reg_data_bin = url_decode(reg_data)
@@ -112,7 +113,7 @@ def parse_registration_data(reg_data):
                                            attestation_cert))
     # TODO: Check the issuer of the certificate
     issuer = attestation_cert.get_issuer()
-    log.debug("The attestation certificate is signed by {0!s}".format(issuer))
+    log.debug("The attestation certificate is signed by {0!r}".format(issuer))
     not_after = attestation_cert.get_notAfter()
     not_before = attestation_cert.get_notBefore()
     log.debug("The attestation certificate "
@@ -120,12 +121,13 @@ def parse_registration_data(reg_data):
     start_time = time.strptime(not_before, "%Y%m%d%H%M%SZ")
     end_time = time.strptime(not_after, "%Y%m%d%H%M%SZ")
     # check the validity period of the certificate
-    if start_time > time.localtime() or \
-                    end_time < time.localtime():  #pragma no cover
-        log.error("The certificate is not valid. {0!s} -> {1!s}".format(not_before,
-                                                              not_after))
-        raise Exception("The time of the attestation certificate is not "
-                        "valid.")
+    if verify_cert:
+        if start_time > time.localtime() or \
+                        end_time < time.localtime():  #pragma no cover
+            log.error("The certificate is not valid. {0!s} -> {1!s}".format(not_before,
+                                                                  not_after))
+            raise Exception("The time of the attestation certificate is not "
+                            "valid.")
 
     # Get the subject as description
     subj_x509name = attestation_cert.get_subject()

@@ -50,8 +50,11 @@ This sets the issuer label for a newly enrolled Google Authenticator.
 This policy takes a fixed string, to add additional information about the
 issuer of the soft token.
 
+Starting with version 2.20 you can use the tags ``{user}``, ``{realm}``, ``{serial}``
+and as new tags ``{givenname}`` and ``{surname}`` in the field issuer.
+
 .. note:: A good idea is to set this to the instance name of your privacyIDEA
-   installation.
+   installation or the name of your company.
 
 tokenlabel
 ~~~~~~~~~~
@@ -253,3 +256,33 @@ regular expression. During registration of the U2F device the information
 is fetched from the attestation certificate.
 Only if the attribute in the attestation certificate matches accordingly the
 token can be registered.
+
+.. _policy_u2f_no_verify_certificate:
+
+u2f_no_verify_certificate
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+type: bool
+
+By default the validity period of the attestation certificate of a U2F device gets
+verified during the registration process.
+If you do not want to verify the validity period, you can check this action.
+
+
+.. _2step_parameters:
+
+{type}_2step_clientsize, {type}_2step_serversize, {type}_2step_difficulty
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+type: string
+
+These are token type specific parameters. They control the key generation during the
+2step token enrollment (see :ref:`2step_enrollment`).
+
+The ``serversize`` is the optional size (in bytes) of the server's key part.
+The ``clientsize`` is the size (in bytes) of the smartphone's key part.
+The ``difficulty`` is a parameter for the key generation.
+In the implementation in version 2.21 PBKDF2 is used. In this case the ``difficulty``
+specifies the number of rounds.
+
+This is new in version 2.21

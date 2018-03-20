@@ -64,7 +64,7 @@ from privacyidea.lib.user import (get_user_from_param, get_default_realm,
                                   split_user)
 from privacyidea.lib.token import (get_tokens, get_realms_of_token)
 from privacyidea.lib.utils import (generate_password, get_client_ip,
-                                   parse_timedelta)
+                                   parse_timedelta, is_true)
 from privacyidea.lib.auth import ROLE
 from privacyidea.api.lib.utils import getParam
 from privacyidea.lib.clientapplication import save_clientapplication
@@ -73,6 +73,9 @@ import functools
 import jwt
 import re
 import importlib
+# Token specific imports!
+from privacyidea.lib.tokens.u2ftoken import (U2FACTION, parse_registration_data)
+from privacyidea.lib.tokens.u2f import x509name_to_string
 
 optional = True
 required = False
@@ -190,7 +193,8 @@ def realmadmin(request=None, action=None):
             po = policy_object.get_policies(
                 action=action, scope=SCOPE.ADMIN,
                 user=g.logged_in_user.get("username"),
-                adminrealm=g.logged_in_user.get("realm"), client=g.client_ip)
+                adminrealm=g.logged_in_user.get("realm"), client=g.client_ip,
+                active=True)
             # TODO: fix this: there could be a list of policies with a list
             # of realms!
             if po and po[0].get("realm"):
@@ -466,6 +470,119 @@ def init_tokenlabel(request=None, action=None):
     return True
 
 
+def twostep_enrollment_activation(request=None, action=None):
+    """
+    This policy function enables the two-step enrollment process according
+    to the configured policies.
+    It is used to decorate the ``/token/init`` endpoint.
+
+    If a ``<type>_2step`` policy matches, the ``2stepinit`` parameter is handled according to the policy.
+    If no policy matches, the ``2stepinit`` parameter is removed from the request data.
+    """
+    policy_object = g.policy_object
+    user_object = get_user_from_param(request.all_data)
+    serial = getParam(request.all_data, "serial", optional)
+    token_type = getParam(request.all_data, "type", optional, "hotp")
+    token_exists = False
+    if serial:
+        tokensobject_list = get_tokens(serial=serial)
+        if len(tokensobject_list) == 1:
+            token_type = tokensobject_list[0].token.tokentype
+            token_exists = True
+    token_type = token_type.lower()
+    role = g.logged_in_user.get("role")
+    # Differentiate between an admin enrolling a token for the
+    # user and a user self-enrolling a token.
+    if role == ROLE.ADMIN:
+        scope = SCOPE.ADMIN
+        adminrealm = g.logged_in_user.get("realm")
+    else:
+        scope = SCOPE.USER
+        adminrealm = None
+    realm = user_object.realm
+    # In any case, the policy's user attribute is matched against the
+    # currently logged-in user (which may be the admin or the
+    # self-enrolling user).
+    user = g.logged_in_user.get("username")
+    # Tokentypes have separate twostep actions
+    action = "{}_2step".format(token_type)
+    twostep_enabled_pols = policy_object.get_action_values(action=action,
+                                                           scope=scope,
+                                                           unique=True,
+                                                           user=user,
+                                                           realm=realm,
+                                                           client=g.client_ip,
+                                                           adminrealm=adminrealm)
+    if twostep_enabled_pols:
+        enabled_setting = twostep_enabled_pols[0]
+        if enabled_setting == "allow":
+            # The user is allowed to pass 2stepinit=1
+            pass
+        elif enabled_setting == "force":
+            # We force 2stepinit to be 1 (if the token does not exist yet)
+            if not token_exists:
+                request.all_data["2stepinit"] = 1
+        else:
+            raise PolicyError("Unknown 2step policy setting: {}".format(enabled_setting))
+    else:
+        # If no policy matches, the user is not allowed
+        # to pass 2stepinit
+        # Force two-step initialization to be None
+        if "2stepinit" in request.all_data:
+            del request.all_data["2stepinit"]
+    return True
+
+
+def twostep_enrollment_parameters(request=None, action=None):
+    """
+    If the ``2stepinit`` parameter is set to true, this policy function
+    reads additional configuration from policies and adds it
+    to ``request.all_data``, that is:
+
+     * ``{type}_2step_serversize`` is written to ``2step_serversize``
+     * ``{type}_2step_clientsize`` is written to ``2step_clientsize`
+     * ``{type}_2step_difficulty`` is written to ``2step_difficulty``
+
+    If no policy matches, the value passed by the user is kept.
+
+    This policy function is used to decorate the ``/token/init`` endpoint.
+    """
+    policy_object = g.policy_object
+    user_object = get_user_from_param(request.all_data)
+    serial = getParam(request.all_data, "serial", optional)
+    token_type = getParam(request.all_data, "type", optional, "hotp")
+    if serial:
+        tokensobject_list = get_tokens(serial=serial)
+        if len(tokensobject_list) == 1:
+            token_type = tokensobject_list[0].token.tokentype
+    token_type = token_type.lower()
+    role = g.logged_in_user.get("role")
+    # Differentiate between an admin enrolling a token for the
+    # user and a user self-enrolling a token.
+    if role == ROLE.ADMIN:
+        adminrealm = g.logged_in_user.get("realm")
+    else:
+        adminrealm = None
+    realm = user_object.realm
+    # In any case, the policy's user attribute is matched against the
+    # currently logged-in user (which may be the admin or the
+    # self-enrolling user).
+    user = g.logged_in_user.get("username")
+    # Tokentypes have separate twostep actions
+    if is_true(getParam(request.all_data, "2stepinit", optional)):
+        parameters = ("2step_serversize", "2step_clientsize", "2step_difficulty")
+        for parameter in parameters:
+            action = u"{}_{}".format(token_type, parameter)
+            action_values = policy_object.get_action_values(action=action,
+                                                            scope=SCOPE.ENROLL,
+                                                            unique=True,
+                                                            user=user,
+                                                            realm=realm,
+                                                            client=g.client_ip,
+                                                            adminrealm=adminrealm)
+            if action_values:
+                request.all_data[parameter] = action_values[0]
+
 def check_max_token_user(request=None, action=None):
     """
     Pre Policy
@@ -598,7 +715,7 @@ def required_email(request=None, action=None):
 
     :param request: The Request Object
     :param action: An optional Action
-    :return: Modifies the request paramters or raises an Exception
+    :return: Modifies the request parameters or raises an Exception
     """
     email = getParam(request.all_data, "email")
     email_found = False
@@ -621,7 +738,7 @@ def required_email(request=None, action=None):
 def auditlog_age(request=None, action=None):
     """
     This pre condition checks for the policy auditlog_age and set the
-    "timelimit" paramter of the audit search API.
+    "timelimit" parameter of the audit search API.
 
     Check ACTION.AUDIT_AGE
 
@@ -1018,12 +1135,55 @@ def save_client_application_type(request, action):
     return True
 
 
+def u2ftoken_verify_cert(request, action):
+    """
+    This is a token specific wrapper for u2f token for the endpoint
+    /token/init
+    According to the policy scope=SCOPE.ENROLL,
+    action=U2FACTION.NO_VERIFY_CERT it can add a parameter to the
+    enrollment parameters to not verify the attestation certificate.
+    The default is to verify the cert.
+    :param request:
+    :param action:
+    :return:
+    """
+    # Get the registration data of the 2nd step of enrolling a U2F device
+    ttype = request.all_data.get("type")
+    if ttype and ttype.lower() == "u2f":
+        policy_object = g.policy_object
+        # Add the default to verify the cert.
+        request.all_data["u2f.verify_cert"] = True
+        user_object = request.User
+
+        if user_object:
+            token_user = user_object.login
+            token_realm = user_object.realm
+            token_resolver = user_object.resolver
+        else:
+            token_realm = token_resolver = token_user = None
+
+        do_not_verify_the_cert = policy_object.get_policies(
+            action=U2FACTION.NO_VERIFY_CERT,
+            scope=SCOPE.ENROLL,
+            realm=token_realm,
+            user=token_user,
+            resolver=token_resolver,
+            active=True,
+            client=g.client_ip)
+        if do_not_verify_the_cert:
+            request.all_data["u2f.verify_cert"] = False
+
+        log.debug("Should we not verify the attestation certificate? "
+                  "Policies: {0!s}".format(do_not_verify_the_cert))
+    return True
+
+
 def u2ftoken_allowed(request, action):
     """
     This is a token specific wrapper for u2f token for the endpoint
      /token/init.
      According to the policy scope=SCOPE.ENROLL,
-     action=U2FACTINO.REQ it checks, if the assertion certificate is an 
+     action=U2FACTION.REQ it checks, if the assertion certificate is an
      allowed U2F token type.
 
      If the token, which is enrolled contains a non allowed attestation 
@@ -1033,9 +1193,6 @@ def u2ftoken_allowed(request, action):
     :param action: 
     :return: 
     """
-    from privacyidea.lib.tokens.u2ftoken import (U2FACTION,
-                                                 parse_registration_data)
-    from privacyidea.lib.tokens.u2f import x509name_to_string
     policy_object = g.policy_object
     # Get the registration data of the 2nd step of enrolling a U2F device
     reg_data = request.all_data.get("regdata")
@@ -1044,8 +1201,11 @@ def u2ftoken_allowed(request, action):
         serial = request.all_data.get("serial")
         user_object = request.User
 
+        # We just check, if the issuer is allowed, not if the certificate
+        # is still valid! (verify_cert=False)
         attestation_cert, user_pub_key, key_handle, \
-        signature, description = parse_registration_data(reg_data)
+        signature, description = parse_registration_data(reg_data,
+                                                         verify_cert=False)
 
         cert_info = {
             "attestation_issuer":
@@ -1103,7 +1263,8 @@ def allowed_audit_realm(request=None, action=None):
         action=ACTION.AUDIT,
         scope=SCOPE.ADMIN,
         user=admin_user.get("username"),
-        client=g.client_ip)
+        client=g.client_ip,
+        active=True)
 
     if pols:
         # get all values in realm:

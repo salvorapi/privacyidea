@@ -92,6 +92,8 @@ class event(object):
 
                     event_handler.do(e_handler_def.get("action"),
                                      options=options)
+                    # In case the handler has modified the response
+                    f_result = options.get("response")
                     # set audit object to success
                     event_audit.log({"success": True})
                     event_audit.finalize_log()
@@ -114,6 +116,9 @@ def get_handler_object(handlername):
         UserNotificationEventHandler
     from privacyidea.lib.eventhandler.tokenhandler import TokenEventHandler
     from privacyidea.lib.eventhandler.scripthandler import ScriptEventHandler
+    from privacyidea.lib.eventhandler.federationhandler import \
+        FederationEventHandler
+    from privacyidea.lib.eventhandler.counterhandler import CounterEventHandler
     h_obj = None
     if handlername == "UserNotification":
         h_obj = UserNotificationEventHandler()
@@ -121,6 +126,10 @@ def get_handler_object(handlername):
         h_obj = TokenEventHandler()
     if handlername == "Script":
         h_obj = ScriptEventHandler()
+    if handlername == "Federation":
+        h_obj = FederationEventHandler()
+    if handlername == "Counter":
+        h_obj = CounterEventHandler()
     return h_obj
 
 
@@ -171,6 +180,8 @@ def set_event(name, event, handlermodule, action, conditions=None,
     :type id: int
     :return: The id of the event.
     """
+    if type(event) == list:
+        event = ",".join(event)
     conditions = conditions or {}
     if id:
         id = int(id)
