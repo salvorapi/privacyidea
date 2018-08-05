@@ -342,6 +342,37 @@ def papertoken_count(request=None, action=None):
     return True
 
 
+def tantoken_count(request=None, action=None):
+    """
+    This is a token specific wrapper for tan token for the endpoint
+    /token/init.
+    According to the policy scope=SCOPE.ENROLL,
+    action=TANACTION.TANTOKEN_COUNT it sets the parameter tantoken_count to
+    enroll a tan token with such many OTP values.
+
+    :param request:
+    :param action:
+    :return:
+    """
+    from privacyidea.lib.tokens.tantoken import TANACTION
+    user_object = request.User
+    policy_object = g.policy_object
+    pols = policy_object.get_action_values(
+        action=TANACTION.TANTOKEN_COUNT,
+        scope=SCOPE.ENROLL,
+        user=user_object.login,
+        resolver=user_object.resolver,
+        realm=user_object.realm,
+        client=g.client_ip,
+        unique=True)
+
+    if pols:
+        tantoken_count = pols[0]
+        request.all_data["tantoken_count"] = tantoken_count
+
+    return True
+
+
 def encrypt_pin(request=None, action=None):
     """
     This policy function is to be used as a decorator for several API functions.
@@ -583,6 +614,7 @@ def twostep_enrollment_parameters(request=None, action=None):
             if action_values:
                 request.all_data[parameter] = action_values[0]
 
+
 def check_max_token_user(request=None, action=None):
     """
     Pre Policy
@@ -611,7 +643,7 @@ def check_max_token_user(request=None, action=None):
             # we need to check how many tokens the user already has assigned!
             tokenobject_list = get_tokens(user=user_object)
             already_assigned_tokens = len(tokenobject_list)
-            if already_assigned_tokens >= int(max(limit_list)):
+            if already_assigned_tokens >= max([int(x) for x in limit_list]):
                 raise PolicyError(ERROR)
     return True
 
@@ -648,10 +680,10 @@ def check_max_token_realm(request=None, action=None):
                                                      realm=realm,
                                                      client=g.client_ip)
         if limit_list:
-            # we need to check how many tokens the user already has assigned!
+            # we need to check how many tokens the realm already has assigned!
             tokenobject_list = get_tokens(realm=realm)
             already_assigned_tokens = len(tokenobject_list)
-            if already_assigned_tokens >= int(max(limit_list)):
+            if already_assigned_tokens >= max([int(x) for x in limit_list]):
                 raise PolicyError(ERROR)
     return True
 
@@ -1056,7 +1088,8 @@ def api_key_required(request=None, action=None):
             g.logged_in_user = {"username": r.get("username", ""),
                                 "realm": r.get("realm", ""),
                                 "role": r.get("role", "")}
-        except AttributeError:
+        except (AttributeError, jwt.DecodeError):
+            # PyJWT 1.3.0 raises AttributeError, PyJWT 1.6.4 raises DecodeError.
             raise PolicyError("No valid API key was passed.")
 
         role = g.logged_in_user.get("role")

@@ -283,8 +283,8 @@ angular.module("privacyideaApp")
                         // But this can also be due to a problem like
                         // "HSM not ready".
                         $scope.transactionid = "";
-                        inform.add(gettextCatalog.getString("Authentication failed. ")
-                            + error.result.error.message,
+                        var errmsg = gettextCatalog.getString("Authentication failed.");
+                        inform.add(errmsg + " " + error.result.error.message,
                             {type: "danger", ttl: 10000});
                 }
             }
@@ -388,7 +388,7 @@ angular.module("privacyideaApp")
     $scope.nextWelcome = function() {
         $scope.welcomeStep += 1;
         if ($scope.welcomeStep === 4) {
-            $('#dialogWelcome').modal().hide();
+            $('#dialogWelcome').modal("hide");
             // Hack, since we can not close the modal and thus the body
             // keeps the modal-open and thus has no scroll-bars
             $("body").removeClass("modal-open");

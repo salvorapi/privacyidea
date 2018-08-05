@@ -75,6 +75,7 @@ class AESHardwareSecurityModule(SecurityModule):  # pragma: no cover
         config = config or {}
         self.name = "HSM"
         self.config = config
+        # Initially, we might be missing a password
         self.is_ready = False
 
         if "module" not in config:
@@ -104,6 +105,13 @@ class AESHardwareSecurityModule(SecurityModule):  # pragma: no cover
         self.initialize_hsm()
 
     def initialize_hsm(self):
+        """
+        Initialize the HSM:
+        * initialize PKCS11 library
+        * login to HSM
+        * get session
+        :return:
+        """
         self.pkcs11.lib.C_Initialize()
         if self.password:
             self._login()
@@ -126,12 +134,10 @@ class AESHardwareSecurityModule(SecurityModule):  # pragma: no cover
             self.password = str(params.get("password"))
         else:
             raise HSMException("missing password")
-        return self._login()
+        self._login()
+        return self.is_ready
 
     def _login(self):
-        if self.is_ready:
-            return True
-
         slotlist = self.pkcs11.getSlotList()
         if not len(slotlist):
             raise HSMException("No HSM connected")
@@ -155,10 +161,8 @@ class AESHardwareSecurityModule(SecurityModule):  # pragma: no cover
             self.key_handles[mapping[k]] = objs[0]
 
         # self.session.logout()
-        self.is_ready = True
         log.debug("Successfully setup the security module.")
-
-        return self.is_ready
+        self.is_ready = True
 
     def random(self, length):
         """
@@ -166,7 +170,18 @@ class AESHardwareSecurityModule(SecurityModule):  # pragma: no cover
         :param length: length of the random bytestring
         :return:
         """
-        r_integers = self.session.generateRandom(length)
+        retries = 0
+        while True:
+            try:
+                r_integers = self.session.generateRandom(length)
+                break
+            except PyKCS11.PyKCS11Error as exx:
+                log.warning(u"Generate Random failed: {0!s}".format(exx))
+                self.initialize_hsm()
+                retries += 1
+                if retries > MAX_RETRIES:
+                    raise HSMException("Failed to generate random number after multiple retries.")
+
         # convert the array of the random integers to a string
         return int_list_to_bytestring(r_integers)
 

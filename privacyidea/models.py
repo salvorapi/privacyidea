@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 #
+#  2018-06-20 Friedrich Weber <friedrich.weber@netknights.it>
+#             Add PeriodicTask, PeriodicTaskOption, PeriodicTaskLastRun
+#  2018-25-09 Paul Lettich <paul.lettich@netknights.it>
+#             Add decrease/reset methods to EventCounter
 #  2017-10-30 Cornelius Kölbel <cornelius.koelbel@netknights.it>
 #             Add timeout and retries to radiuserver
 #  2017-08-24 Cornelius Kölbel <cornelius.koelbel@netknights.it>
@@ -34,6 +38,8 @@
 import binascii
 import logging
 from datetime import datetime, timedelta
+
+from dateutil.tz import tzutc
 from json import loads, dumps
 from flask_sqlalchemy import SQLAlchemy
 from .lib.crypto import (encrypt,
@@ -47,6 +53,8 @@ from .lib.crypto import (encrypt,
 from sqlalchemy import and_
 from sqlalchemy.schema import Sequence
 from .lib.log import log_with
+from .lib.utils import is_true, convert_column_to_unicode
+
 log = logging.getLogger(__name__)
 
 #
@@ -119,6 +127,7 @@ class Token(MethodsMixin, db.Model):
     to the tokentype.
     """
     __tablename__ = 'token'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("token_seq"),
                    primary_key=True,
                    nullable=False)
@@ -625,7 +634,8 @@ class TokenInfo(MethodsMixin, db.Model):
                             backref='info_list')
     __table_args__ = (db.UniqueConstraint('token_id',
                                           'Key',
-                                          name='tiix_2'), {})
+                                          name='tiix_2'),
+                      {'mysql_row_format': 'DYNAMIC'})
 
     def __init__(self, token_id, Key, Value,
                  Type= None,
@@ -635,7 +645,7 @@ class TokenInfo(MethodsMixin, db.Model):
         """
         self.token_id = token_id
         self.Key = Key
-        self.Value = Value
+        self.Value = convert_column_to_unicode(Value)
         self.Type = Type
         self.Description = Description
 
@@ -677,6 +687,7 @@ class Admin(db.Model):
     :type email: basestring
     """
     __tablename__ = "admin"
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     username = db.Column(db.Unicode(120),
                          primary_key=True,
                          nullable=False)
@@ -716,6 +727,7 @@ class Config(TimestampMethodsMixin, db.Model):
     stored in specific tables.
     """
     __tablename__ = "config"
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     Key = db.Column(db.Unicode(255),
                     primary_key=True,
                     nullable=False)
@@ -726,7 +738,7 @@ class Config(TimestampMethodsMixin, db.Model):
     @log_with(log)
     def __init__(self, Key, Value, Type=u'', Description=u''):
         self.Key = unicode(Key)
-        self.Value = unicode(Value)
+        self.Value = convert_column_to_unicode(Value)
         self.Type = unicode(Type)
         self.Description = unicode(Description)
 
@@ -754,6 +766,7 @@ class Realm(TimestampMethodsMixin, db.Model):
     the realms. The linking to resolvers is stored in the table "resolverrealm".
     """
     __tablename__ = 'realm'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("realm_seq"), primary_key=True,
                    nullable=False)
     name = db.Column(db.Unicode(255), default=u'',
@@ -789,6 +802,7 @@ class CAConnector(MethodsMixin, db.Model):
     stored in the table "caconnectorconfig".
     """
     __tablename__ = 'caconnector'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("caconnector_seq"), primary_key=True,
                    nullable=False)
     name = db.Column(db.Unicode(255), default=u"",
@@ -838,7 +852,8 @@ class CAConnectorConfig(db.Model):
                             backref='config_list')
     __table_args__ = (db.UniqueConstraint('caconnector_id',
                                           'Key',
-                                          name='ccix_2'), {})
+                                          name='ccix_2'),
+                      {'mysql_row_format': 'DYNAMIC'})
 
     def __init__(self, caconnector_id=None,
                  Key=None, Value=None,
@@ -852,7 +867,7 @@ class CAConnectorConfig(db.Model):
                                        .first()\
                                        .id
         self.Key = Key
-        self.Value = Value
+        self.Value = convert_column_to_unicode(Value)
         self.Type = Type
         self.Description = Description
 
@@ -884,6 +899,7 @@ class Resolver(TimestampMethodsMixin, db.Model):
     configuration of the resolvers is stored in the table "resolverconfig".
     """
     __tablename__ = 'resolver'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("resolver_seq"), primary_key=True,
                    nullable=False)
     name = db.Column(db.Unicode(255), default=u"",
@@ -933,8 +949,9 @@ class ResolverConfig(TimestampMethodsMixin, db.Model):
                            backref='config_list')
     __table_args__ = (db.UniqueConstraint('resolver_id',
                                           'Key',
-                                          name='rcix_2'), {})
-    
+                                          name='rcix_2'),
+                      {'mysql_row_format': 'DYNAMIC'})
+
     def __init__(self, resolver_id=None,
                  Key=None, Value=None,
                  resolver=None,
@@ -947,7 +964,7 @@ class ResolverConfig(TimestampMethodsMixin, db.Model):
                                        .first()\
                                        .id
         self.Key = unicode(Key)
-        self.Value = unicode(Value)
+        self.Value = convert_column_to_unicode(Value)
         self.Type = unicode(Type)
         self.Description = unicode(Description)
 
@@ -997,8 +1014,9 @@ class ResolverRealm(TimestampMethodsMixin, db.Model):
                             backref="resolver_list")
     __table_args__ = (db.UniqueConstraint('resolver_id',
                                           'realm_id',
-                                          name='rrix_2'), {})
-    
+                                          name='rrix_2'),
+                      {'mysql_row_format': 'DYNAMIC'})
+
     def __init__(self, resolver_id=None, realm_id=None,
                  resolver_name=None,
                  realm_name=None,
@@ -1042,8 +1060,9 @@ class TokenRealm(MethodsMixin, db.Model):
                             backref='token_list')
     __table_args__ = (db.UniqueConstraint('token_id',
                                           'realm_id',
-                                          name='trix_2'), {})
-                                      
+                                          name='trix_2'),
+                      {'mysql_row_format': 'DYNAMIC'})
+
     def __init__(self, realm_id=0, token_id=0, realmname=None):
         """
         Create a new TokenRealm entry.
@@ -1089,6 +1108,7 @@ class PasswordReset(MethodsMixin, db.Model):
     Optional: The email to which the recoverycode was sent, can be stored.
     """
     __tablename__ = "passwordreset"
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer(), Sequence("pwreset_seq"), primary_key=True,
                    nullable=False)
     recoverycode = db.Column(db.Unicode(255), nullable=False)
@@ -1118,6 +1138,7 @@ class Challenge(MethodsMixin, db.Model):
     Table for handling of the generic challenges.
     """
     __tablename__ = "challenge"
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer(), Sequence("challenge_seq"), primary_key=True,
                    nullable=False)
     transaction_id = db.Column(db.Unicode(64), nullable=False, index=True)
@@ -1269,6 +1290,7 @@ class Policy(TimestampMethodsMixin, db.Model):
      * user actions
     """
     __tablename__ = "policy"
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("policy_seq"), primary_key=True)
     active = db.Column(db.Boolean, default=True)
     check_all_resolvers = db.Column(db.Boolean, default=False)
@@ -1282,16 +1304,16 @@ class Policy(TimestampMethodsMixin, db.Model):
     client = db.Column(db.Unicode(256), default=u"")
     time = db.Column(db.Unicode(64), default=u"")
     condition = db.Column(db.Integer, default=0, nullable=False)
+    # If there are multiple matching policies, choose the one
+    # with the lowest priority number. We choose 1 to be the default priotity.
+    priority = db.Column(db.Integer, default=1, nullable=False)
     
     def __init__(self, name,
                  active=True, scope="", action="", realm="", adminrealm="",
-                 resolver="", user="", client="", time="", condition=0,
+                 resolver="", user="", client="", time="", condition=0, priority=1,
                  check_all_resolvers=False):
         if type(active) in [str, unicode]:
-            if active.lower() in ["true", "1"]:
-                active = True
-            else:
-                active = False
+            active = is_true(active.lower())
         self.name = name
         self.action = action
         self.scope = scope
@@ -1303,6 +1325,7 @@ class Policy(TimestampMethodsMixin, db.Model):
         self.client = client
         self.time = time
         self.condition = condition
+        self.priority = priority
         self.check_all_resolvers = check_all_resolvers
 
     @staticmethod
@@ -1339,7 +1362,8 @@ class Policy(TimestampMethodsMixin, db.Model):
              "user": self._split_string(self.user),
              "client": self._split_string(self.client),
              "time": self.time,
-             "condition": self.condition}
+             "condition": self.condition,
+             "priority": self.priority}
         action_list = [x.strip().split("=") for x in (self.action or "").split(
             ",")]
         action_dict = {}
@@ -1371,6 +1395,7 @@ class MachineToken(MethodsMixin, db.Model):
     This can be an n:m mapping.
     """
     __tablename__ = 'machinetoken'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer(), Sequence("machinetoken_seq"),
                    primary_key=True, nullable=False)
     token_id = db.Column(db.Integer(),
@@ -1471,6 +1496,7 @@ class MachineTokenOptions(db.Model):
     options.
     """
     __tablename__ = 'machinetokenoptions'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer(), Sequence("machtokenopt_seq"),
                    primary_key=True, nullable=False)
     machinetoken_id = db.Column(db.Integer(),
@@ -1489,7 +1515,7 @@ class MachineTokenOptions(db.Model):
                                                             machinetoken_id))
         self.machinetoken_id = machinetoken_id
         self.mt_key = key
-        self.mt_value = value
+        self.mt_value = unicode(value)
 
         # if the combination machinetoken_id / mt_key already exist,
         # we need to update
@@ -1541,6 +1567,7 @@ class EventHandler(MethodsMixin, db.Model):
     condition and action.
     """
     __tablename__ = 'eventhandler'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("eventhandler_seq"), primary_key=True,
                    nullable=False)
     # in fact the name is a description
@@ -1668,12 +1695,13 @@ class EventHandlerCondition(db.Model):
                             backref='condition_list')
     __table_args__ = (db.UniqueConstraint('eventhandler_id',
                                           'Key',
-                                          name='ehcix_1'), {})
+                                          name='ehcix_1'),
+                      {'mysql_row_format': 'DYNAMIC'})
 
     def __init__(self, eventhandler_id, Key, Value, comparator="equal"):
         self.eventhandler_id = eventhandler_id
         self.Key = Key
-        self.Value = Value
+        self.Value = convert_column_to_unicode(Value)
         self.comparator = comparator
         self.save()
 
@@ -1715,12 +1743,13 @@ class EventHandlerOption(db.Model):
                             backref='option_list')
     __table_args__ = (db.UniqueConstraint('eventhandler_id',
                                           'Key',
-                                          name='ehoix_1'), {})
+                                          name='ehoix_1'),
+                      {'mysql_row_format': 'DYNAMIC'})
 
     def __init__(self, eventhandler_id, Key, Value, Type="", Description=""):
         self.eventhandler_id = eventhandler_id
         self.Key = Key
-        self.Value = Value
+        self.Value = convert_column_to_unicode(Value)
         self.Type = Type
         self.Description = Description
         self.save()
@@ -1755,6 +1784,7 @@ class MachineResolver(MethodsMixin, db.Model):
     its config
     """
     __tablename__ = 'machineresolver'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("machineresolver_seq"),
                    primary_key=True, nullable=False)
     name = db.Column(db.Unicode(255), default=u"",
@@ -1799,7 +1829,8 @@ class MachineResolverConfig(db.Model):
                            backref='config_list')
     __table_args__ = (db.UniqueConstraint('resolver_id',
                                           'Key',
-                                          name='mrcix_2'), {})
+                                          name='mrcix_2'),
+                      {'mysql_row_format': 'DYNAMIC'})
 
     def __init__(self, resolver_id=None, Key=None, Value=None, resolver=None,
                  Type="", Description=""):
@@ -1811,7 +1842,7 @@ class MachineResolverConfig(db.Model):
                                 .first()\
                                 .id
         self.Key = Key
-        self.Value = Value
+        self.Value = convert_column_to_unicode(Value)
         self.Type = Type
         self.Description = Description
 
@@ -1902,6 +1933,7 @@ class SMSGateway(MethodsMixin, db.Model):
     All options and parameters are saved in other tables.
     """
     __tablename__ = 'smsgateway'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("smsgateway_seq"), primary_key=True)
     identifier = db.Column(db.Unicode(255), nullable=False, unique=True)
     description = db.Column(db.Unicode(1024), default=u"")
@@ -2006,7 +2038,8 @@ class SMSGatewayOption(MethodsMixin, db.Model):
                             backref='ref_option_list')
     __table_args__ = (db.UniqueConstraint('gateway_id',
                                           'Key',
-                                          name='sgix_1'), {})
+                                          name='sgix_1'),
+                      {'mysql_row_format': 'DYNAMIC'})
 
     def __init__(self, gateway_id, Key, Value, Type=None):
 
@@ -2015,7 +2048,7 @@ class SMSGatewayOption(MethodsMixin, db.Model):
         """
         self.gateway_id = gateway_id
         self.Key = Key
-        self.Value = Value
+        self.Value = convert_column_to_unicode(Value)
         self.Type = Type
         self.save()
 
@@ -2044,6 +2077,7 @@ class PrivacyIDEAServer(MethodsMixin, db.Model):
     This table can store remote privacyIDEA server definitions
     """
     __tablename__ = 'privacyideaserver'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("privacyideaserver_seq"),
                    primary_key=True)
     # This is a name to refer to
@@ -2093,6 +2127,7 @@ class RADIUSServer(MethodsMixin, db.Model):
     radius passthru policy.
     """
     __tablename__ = 'radiusserver'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("radiusserver_seq"), primary_key=True)
     # This is a name to refer to
     identifier = db.Column(db.Unicode(255), nullable=False, unique=True)
@@ -2150,6 +2185,7 @@ class SMTPServer(MethodsMixin, db.Model):
     The config entries are referenced by the id of the machine resolver
     """
     __tablename__ = 'smtpserver'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("smtpserver_seq"),primary_key=True)
     # This is a name to refer to
     identifier = db.Column(db.Unicode(255), nullable=False)
@@ -2209,7 +2245,8 @@ class ClientApplication(MethodsMixin, db.Model):
     lastseen = db.Column(db.DateTime)
     __table_args__ = (db.UniqueConstraint('ip',
                                           'clienttype',
-                                          name='caix'), {})
+                                          name='caix'),
+                      {'mysql_row_format': 'DYNAMIC'})
 
     def save(self):
         clientapp = ClientApplication.query.filter(
@@ -2242,6 +2279,7 @@ class Subscription(MethodsMixin, db.Model):
     This table stores the imported subscription files.
     """
     __tablename__ = 'subscription'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("subscription_seq"), primary_key=True)
     application = db.Column(db.Unicode(80), index=True)
     for_name = db.Column(db.Unicode(80), nullable=False)
@@ -2298,9 +2336,10 @@ class Subscription(MethodsMixin, db.Model):
 
 class EventCounter(db.Model):
     """
-    This table stores counters of the event hanlder "Counter".
+    This table stores counters of the event handler "Counter".
     """
     __tablename__ = 'eventcounter'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     counter_name = db.Column(db.Unicode(80), nullable=False, primary_key=True)
     counter_value = db.Column(db.Integer, default=0)
 
@@ -2328,6 +2367,27 @@ class EventCounter(db.Model):
         self.counter_value = self.counter_value + 1
         self.save()
 
+    def decrease(self, allow_negative=False):
+        """
+        Decrease the value of a counter, stop at zero if allow_negative not given
+        :param allow_negative:
+        :return:
+        """
+        if self.counter_value <= 0 and not allow_negative:
+            # set counter to zero
+            self.counter_value = 0
+        else:
+            self.counter_value = self.counter_value - 1
+        self.save()
+
+    def reset(self):
+        """
+        Reset the value of a counter
+        :return:
+        """
+        self.counter_value = 0
+        self.save()
+
 
 ### Audit
 
@@ -2353,6 +2413,7 @@ class Audit(MethodsMixin, db.Model):
     This class stores the Audit entries
     """
     __tablename__ = AUDIT_TABLE_NAME
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("audit_seq"), primary_key=True)
     date = db.Column(db.DateTime)
     signature = db.Column(db.String(audit_column_length.get("signature")))
@@ -2393,25 +2454,27 @@ class Audit(MethodsMixin, db.Model):
                  ):
         self.signature = ""
         self.date = datetime.now()
-        self.action = action
+        self.action = convert_column_to_unicode(action)
         self.success = success
-        self.serial = serial
-        self.token_type = token_type
-        self.user = user
-        self.realm = realm
-        self.resolver = resolver
-        self.administrator = administrator
-        self.action_detail = action_detail
-        self.info = info
-        self.privacyidea_server = privacyidea_server
-        self.client = client
-        self.loglevel = loglevel
-        self.clearance_level = clearance_level
+        self.serial = convert_column_to_unicode(serial)
+        self.token_type = convert_column_to_unicode(token_type)
+        self.user = convert_column_to_unicode(user)
+        self.realm = convert_column_to_unicode(realm)
+        self.resolver = convert_column_to_unicode(resolver)
+        self.administrator = convert_column_to_unicode(administrator)
+        self.action_detail = convert_column_to_unicode(action_detail)
+        self.info = convert_column_to_unicode(info)
+        self.privacyidea_server = convert_column_to_unicode(privacyidea_server)
+        self.client = convert_column_to_unicode(client)
+        self.loglevel = convert_column_to_unicode(loglevel)
+        self.clearance_level = convert_column_to_unicode(clearance_level)
+
 
 ### User Cache
 
 class UserCache(MethodsMixin, db.Model):
     __tablename__ = 'usercache'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("usercache_seq"), primary_key=True)
     username = db.Column(db.Unicode(64), default=u"", index=True)
     resolver = db.Column(db.Unicode(120), default=u'')
@@ -2427,6 +2490,7 @@ class UserCache(MethodsMixin, db.Model):
 
 class AuthCache(MethodsMixin, db.Model):
     __tablename__ = 'authcache'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
     id = db.Column(db.Integer, Sequence("usercache_seq"), primary_key=True)
     first_auth = db.Column(db.DateTime)
     last_auth = db.Column(db.DateTime)
@@ -2447,3 +2511,254 @@ class AuthCache(MethodsMixin, db.Model):
         self.authentication = authentication
         self.first_auth = first_auth
         self.last_auth = last_auth
+
+
+### Periodic Tasks
+
+class PeriodicTask(MethodsMixin, db.Model):
+    """
+    This class stores tasks that should be run periodically.
+    """
+    __tablename__ = 'periodictask'
+    __table_args__ = {'mysql_row_format': 'DYNAMIC'}
+    id = db.Column(db.Integer, Sequence("periodictask_seq"), primary_key=True)
+    name = db.Column(db.Unicode(64), unique=True, nullable=False)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+    interval = db.Column(db.Unicode(256), nullable=False)
+    nodes = db.Column(db.Unicode(256), nullable=False)
+    taskmodule = db.Column(db.Unicode(256), nullable=False)
+    options = db.relationship('PeriodicTaskOption',
+                              lazy='dynamic',
+                              backref='periodictask')
+    last_runs = db.relationship('PeriodicTaskLastRun',
+                                lazy='dynamic',
+                                backref='periodictask')
+
+    def __init__(self, name, active, interval, node_list, taskmodule, options=None, id=None):
+        """
+        :param name: Unique name of the periodic task as unicode
+        :param active: a boolean
+        :param interval: a unicode specifying the periodicity of the task
+        :param node_list: a list of unicodes, denoting the node names that should execute that task.
+                          If we update an existing PeriodicTask entry, PeriodicTaskLastRun entries
+                          referring to nodes that are not present in ``node_list`` any more will be deleted.
+        :param taskmodule: a unicode
+        :param options: a dictionary of options, mapping unicode keys to values. Values will be converted to unicode.
+                        If we update an existing PeriodicTask entry, all options that have been set previously
+                        but are not present in ``options`` will be deleted.
+        :param id: the ID of an existing entry, if any
+        """
+        self.id = id
+        self.name = name
+        self.active = active
+        self.interval = interval
+        self.nodes = u", ".join(node_list)
+        self.taskmodule = taskmodule
+        self.save()
+        # add the options to the periodic task
+        options = options or {}
+        for k, v in options.iteritems():
+            PeriodicTaskOption(periodictask_id=self.id, key=k, value=v)
+        # remove all leftover options
+        all_options = PeriodicTaskOption.query.filter_by(periodictask_id=self.id).all()
+        for option in all_options:
+            if option.key not in options:
+                PeriodicTaskOption.query.filter_by(id=option.id).delete()
+        # remove all leftover last_runs
+        all_last_runs = PeriodicTaskLastRun.query.filter_by(periodictask_id=self.id).all()
+        for last_run in all_last_runs:
+            if last_run.node not in node_list:
+                PeriodicTaskLastRun.query.filter_by(id=last_run.id).delete()
+        db.session.commit()
+
+    def get(self):
+        """
+        Return the serialized periodic task object including the options and last runs.
+        The last runs are returned as timezone-aware UTC datetimes.
+
+        :return: complete dict
+        """
+        return {"id": self.id,
+                "name": self.name,
+                "active": self.active,
+                "interval": self.interval,
+                "nodes": [node.strip() for node in self.nodes.split(",")],
+                "taskmodule": self.taskmodule,
+                "options": dict((option.key, option.value) for option in self.options),
+                "last_runs": dict((last_run.node, last_run.aware_timestamp) for last_run in self.last_runs)}
+
+    def save(self):
+        """
+        If the entry has an ID set, update the entry. If not, create one.
+        :return: the entry ID
+        """
+        if self.id is None:
+            # create a new one
+            db.session.add(self)
+        else:
+            # update
+            PeriodicTask.query.filter_by(id=self.id).update({
+                "name": self.name,
+                "active": self.active,
+                "interval": self.interval,
+                "nodes": self.nodes,
+                "taskmodule": self.taskmodule,
+            })
+        db.session.commit()
+        return self.id
+
+    def delete(self):
+        ret = self.id
+        # delete all PeriodicTaskOptions and PeriodicTaskLastRuns before deleting myself
+        db.session.query(PeriodicTaskOption).filter_by(periodictask_id=ret).delete()
+        db.session.query(PeriodicTaskLastRun).filter_by(periodictask_id=ret).delete()
+        db.session.delete(self)
+        db.session.commit()
+        return ret
+
+    def set_last_run(self, node, timestamp):
+        """
+        Store the information that the last run of the periodic job occurred on ``node`` at ``timestamp``.
+        :param node: Node name as a string
+        :param timestamp: Timestamp as UTC datetime (without timezone information)
+        :return:
+        """
+        PeriodicTaskLastRun(self.id, node, timestamp)
+
+
+class PeriodicTaskOption(db.Model):
+    """
+    Each PeriodicTask entry can have additional options according to the
+    task module.
+    """
+    __tablename__ = 'periodictaskoption'
+    id = db.Column(db.Integer, Sequence("periodictaskopt_seq"),
+                   primary_key=True)
+    periodictask_id = db.Column(db.Integer, db.ForeignKey('periodictask.id'))
+    key = db.Column(db.Unicode(256), nullable=False)
+    value = db.Column(db.Unicode(2000), default=u'')
+
+    __table_args__ = (db.UniqueConstraint('periodictask_id',
+                                          'key',
+                                          name='ptoix_1'),
+                      {'mysql_row_format': 'DYNAMIC'})
+
+    def __init__(self, periodictask_id, key, value):
+        self.periodictask_id = periodictask_id
+        self.key = key
+        self.value = convert_column_to_unicode(value)
+        self.save()
+
+    def save(self):
+        """
+        Create or update a PeriodicTaskOption entry, depending on the value of ``self.id``
+        :return: the entry ID
+        """
+        option = PeriodicTaskOption.query.filter_by(
+            periodictask_id=self.periodictask_id, key=self.key
+        ).first()
+        if option is None:
+            # create a new one
+            db.session.add(self)
+            ret = self.id
+        else:
+            # update
+            PeriodicTaskOption.query.filter_by(periodictask_id=self.periodictask_id, key=self.key).update({
+                'value': self.value,
+            })
+            ret = option.id
+        db.session.commit()
+        return ret
+
+
+class PeriodicTaskLastRun(db.Model):
+    """
+    Each PeriodicTask entry stores, for each node, the timestamp of the last successful run.
+    """
+    __tablename__ = 'periodictasklastrun'
+    id = db.Column(db.Integer, Sequence("periodictasklastrun_seq"),
+                   primary_key=True)
+    periodictask_id = db.Column(db.Integer, db.ForeignKey('periodictask.id'))
+    node = db.Column(db.Unicode(256), nullable=False)
+    timestamp = db.Column(db.DateTime(False), nullable=False)
+
+    __table_args__ = (db.UniqueConstraint('periodictask_id',
+                                          'node',
+                                          name='ptlrix_1'),
+                      {'mysql_row_format': 'DYNAMIC'})
+
+    def __init__(self, periodictask_id, node, timestamp):
+        """
+        :param periodictask_id: ID of the periodic task we are referring to
+        :param node: Node name as unicode
+        :param timestamp: Time of the last run as a datetime. A timezone must not be set!
+                          We require the time to be given in UTC.
+        """
+        self.periodictask_id = periodictask_id
+        self.node = node
+        self.timestamp = timestamp
+        self.save()
+
+    @property
+    def aware_timestamp(self):
+        """
+        Return self.timezone with attached UTC tzinfo
+        """
+        return self.timestamp.replace(tzinfo=tzutc())
+
+    def save(self):
+        """
+        Create or update a PeriodicTaskLastRun entry, depending on the value of ``self.id``.
+        :return: the entry id
+        """
+        last_run = PeriodicTaskLastRun.query.filter_by(
+            periodictask_id=self.periodictask_id, node=self.node,
+        ).first()
+        if last_run is None:
+            # create a new one
+            db.session.add(self)
+            ret = self.id
+        else:
+            # update
+            PeriodicTaskLastRun.query.filter_by(periodictask_id=self.periodictask_id, node=self.node).update({
+                'timestamp': self.timestamp,
+            })
+            ret = last_run.id
+        db.session.commit()
+        return ret
+
+
+class MonitoringStats(MethodsMixin, db.Model):
+    """
+    This is the table that stores measured, arbitrary statistic points in time.
+
+    This could be used to store time series but also to store current values,
+    by simply fetching the last value from the database.
+    """
+    __tablename__ = 'monitoringstats'
+    id = db.Column(db.Integer, Sequence("monitoringstats_seq"),
+                   primary_key=True)
+    # We store this as a naive datetime in UTC
+    timestamp = db.Column(db.DateTime(False), nullable=False)
+    stats_key = db.Column(db.Unicode(128), nullable=False)
+    stats_value = db.Column(db.Integer, nullable=False, default=0)
+
+    __table_args__ = (db.UniqueConstraint('timestamp',
+                                          'stats_key',
+                                          name='msix_1'),
+                      {'mysql_row_format': 'DYNAMIC'})
+
+    def __init__(self, timestamp, key, value):
+        """
+        Create a new database entry in the monitoring stats table
+        :param timestamp: The time of the measurement point
+        :type timestamp: timezone-naive datetime
+        :param key: The key of the measurement
+        :type key: basestring
+        :param value: The value of the measurement
+        :type value: Int
+        """
+        self.timestamp = timestamp
+        self.stats_key = key
+        self.stats_value = value
+        self.save()

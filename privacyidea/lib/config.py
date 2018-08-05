@@ -46,7 +46,7 @@ from .crypto import decryptPassword
 from .resolvers.UserIdResolver import UserIdResolver
 from .machines.base import BaseMachineResolver
 from .caconnectors.localca import BaseCAConnector
-from .utils import reload_db
+from .utils import reload_db, is_true
 import importlib
 import datetime
 
@@ -193,7 +193,7 @@ class ConfigClass(object):
             if isinstance(r_config, int):
                 r_config = r_config > 0
             if isinstance(r_config, basestring):
-                r_config = r_config.lower() in ["true", "1"]
+                r_config = is_true(r_config.lower())
 
         return r_config
 
@@ -611,6 +611,7 @@ def get_token_list():
     module_list.add("privacyidea.lib.tokens.papertoken")
     module_list.add("privacyidea.lib.tokens.questionnairetoken")
     module_list.add("privacyidea.lib.tokens.vascotoken")
+    module_list.add("privacyidea.lib.tokens.tantoken")
 
     #module_list.add(".tokens.tagespassworttoken")
     #module_list.add(".tokens.vascotoken")
@@ -860,3 +861,28 @@ def return_saml_attributes_on_fail():
     r = get_from_config(key="ReturnSamlAttributesOnFail", default=False,
                         return_bool=True)
     return r
+
+
+def get_privacyidea_node():
+    """
+    This returns the node name of the privacyIDEA node as found in the pi.cfg
+    file in PI_NODE.
+    If it does not exist, the PI_AUDIT_SERVERNAME is used.
+    :return: the destinct node name
+    """
+    node_name = current_app.config.get("PI_NODE",
+                                       current_app.config.get("PI_AUDIT_SERVERNAME",
+                                                              "localnode"))
+    return node_name
+
+
+def get_privacyidea_nodes():
+    """
+    This returns the list of the nodes, including the own local node name
+    :return: list of nodes
+    """
+    own_node_name = get_privacyidea_node()
+    nodes = current_app.config.get("PI_NODES", [])[:]
+    if own_node_name not in nodes:
+        nodes.append(own_node_name)
+    return nodes

@@ -489,7 +489,11 @@ class IdResolver (UserIdResolver):
             for map_k, map_v in self.userinfo.items():
                 if ldap_k == map_v:
                     if ldap_k == "objectGUID":
-                        ret[map_k] = ldap_v[0]
+                        # An objectGUID should be no list, since it is unique
+                        if isinstance(ldap_v, basestring):
+                            ret[map_k] = ldap_v.strip("{").strip("}")
+                        else:
+                            raise Exception("The LDAP returns an objectGUID, that is no string: {0!s}".format(type(ldap_v)))
                     elif type(ldap_v) == list and map_k not in self.multivalueattributes:
                         # lists that are not in self.multivalueattributes return first value
                         # as a string. Multi-value-attributes are returned as a list
@@ -529,12 +533,28 @@ class IdResolver (UserIdResolver):
         if len(self.loginname_attribute) > 1:
             loginname_filter = u""
             for l_attribute in self.loginname_attribute:
-                loginname_filter += u"({!s}={!s})".format(l_attribute.strip(),
-                                                          login_name)
+                # Special case if we have a guid
+                try:
+                    if l_attribute.lower() == "objectguid":
+                        search_login_name = trim_objectGUID(login_name)
+                    else:
+                        search_login_name = login_name
+                    loginname_filter += u"({!s}={!s})".format(l_attribute.strip(),
+                                                              search_login_name)
+                except ValueError:
+                    # This happens if we have a self.loginname_attribute like ["sAMAccountName","objectGUID"],
+                    # the user logs in with his sAMAccountName, which can
+                    # not be transformed to a UUID
+                    log.debug(u"Can not transform {0!s} to a objectGUID.".format(login_name))
+
             loginname_filter = u"|" + loginname_filter
         else:
+            if self.loginname_attribute[0].lower() == "objectguid":
+                search_login_name = trim_objectGUID(login_name)
+            else:
+                search_login_name = login_name
             loginname_filter = u"{!s}={!s}".format(self.loginname_attribute[0],
-                                                   login_name)
+                                                   search_login_name)
 
         log.debug("login name filter: {!r}".format(loginname_filter))
         filter = u"(&{0!s}({1!s}))".format(self.searchfilter, loginname_filter)
@@ -674,7 +694,7 @@ class IdResolver (UserIdResolver):
         self.timeout = float(config.get("TIMEOUT", 5))
         self.cache_timeout = int(config.get("CACHE_TIMEOUT", 120))
         self.sizelimit = int(config.get("SIZELIMIT", 500))
-        self.loginname_attribute = config.get("LOGINNAMEATTRIBUTE","").split(",")
+        self.loginname_attribute = [la.strip() for la in config.get("LOGINNAMEATTRIBUTE","").split(",")]
         self.searchfilter = config.get("LDAPSEARCHFILTER")
         userinfo = config.get("USERINFO", "{}")
         self.userinfo = yaml.safe_load(userinfo)

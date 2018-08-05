@@ -155,6 +155,7 @@ from configobj import ConfigObj
 
 from netaddr import IPAddress
 from netaddr import IPNetwork
+from operator import itemgetter
 import logging
 from ..models import (Policy, Config, PRIVACYIDEA_TIMESTAMP, db,
                       save_config_timestamp)
@@ -208,6 +209,7 @@ class ACTION(object):
     CACONNECTORWRITE = "caconnectorwrite"
     CACONNECTORDELETE = "caconnectordelete"
     CHALLENGERESPONSE = "challenge_response"
+    CHALLENGETEXT = "challenge_text"
     GETCHALLENGES = "getchallenges"
     COPYTOKENPIN = "copytokenpin"
     COPYTOKENUSER = "copytokenuser"
@@ -291,6 +293,7 @@ class ACTION(object):
     PRIVACYIDEASERVERWRITE = "privacyideaserver_write"
     REALMDROPDOWN = "realm_dropdown"
     EVENTHANDLINGWRITE = "eventhandling_write"
+    PERIODICTASKWRITE = "periodictask_write"
     SMSGATEWAYWRITE = "smsgateway_write"
     CHANGE_PIN_FIRST_USE = "change_pin_on_first_use"
     CHANGE_PIN_EVERY = "change_pin_every"
@@ -305,6 +308,8 @@ class ACTION(object):
     HIDE_WELCOME = "hide_welcome_info"
     CUSTOM_MENU = "custom_menu"
     CUSTOM_BASELINE = "custom_baseline"
+    STATISTICSREAD = "statistics_read"
+    STATISTICSDELETE = "statistics_delete"
 
 
 class GROUP(object):
@@ -444,9 +449,10 @@ class PolicyClass(object):
     @log_with(log)
     def get_policies(self, name=None, scope=None, realm=None, active=None,
                      resolver=None, user=None, client=None, action=None,
-                     adminrealm=None, time=None, all_times=False):
+                     adminrealm=None, time=None, all_times=False,
+                     sort_by_priority=True):
         """
-        Return the policies of the given filter values
+        Return the policies of the given filter values.
 
         :param name: The name of the policy
         :param scope: The scope of the policy
@@ -465,6 +471,9 @@ class PolicyClass(object):
         :param all_times: If True the time restriction of the policies is
             ignored. Policies of all time ranges will be returned.
         :type all_times: bool
+        :param sort_by_priority: If true, sort the resulting list by priority, ascending
+        by their policy numbers.
+        :type sort_by_priority: bool
         :return: list of policies
         :rtype: list of dicts
         """
@@ -586,7 +595,33 @@ class PolicyClass(object):
             log.debug("Policies after matching client".format(
                 reduced_policies))
 
+        if sort_by_priority:
+            reduced_policies = sorted(reduced_policies, key=itemgetter("priority"))
+
         return reduced_policies
+
+    @staticmethod
+    def check_for_conflicts(policies, action):
+        """
+        Given a (not necessarily sorted) list of policy dictionaries and an action name,
+        check that there are no action value conflicts.
+
+        This raises a PolicyError if there are multiple policies with the highest
+        priority which define different values for **action**.
+
+        Otherwise, the function just returns nothing.
+
+        :param policies: list of dictionaries
+        :param action: string
+        """
+        if len(policies) > 1:
+            prioritized_policy = min(policies, key=itemgetter("priority"))
+            prioritized_action = prioritized_policy["action"][action]
+            highest_priority = prioritized_policy["priority"]
+            for other_policy in policies:
+                if (other_policy["priority"] == highest_priority
+                        and other_policy["action"][action] != prioritized_action):
+                    raise PolicyError("Contradicting {!s} policies.".format(action))
 
     @log_with(log)
     def get_action_values(self, action, scope=SCOPE.AUTHZ, realm=None,
@@ -602,20 +637,24 @@ class PolicyClass(object):
             action: serial
         would return a list of allowed serials
 
-        :param unique: if set, the function will raise an exception if more
-            than one value is returned
+        :param unique: if set, the function will only consider the policy with the
+            highest priority and check for policy conflicts.
         :param allow_white_space_in_action: Some policies like emailtext
             would allow entering text with whitespaces. These whitespaces
             must not be used to separate action values!
         :type allow_white_space_in_action: bool
-        :return: A list of the allowed tokentypes
+        :return: A list of action values, sorted by policy priorities.
         :rtype: list
         """
         action_values = []
         policies = self.get_policies(scope=scope, adminrealm=adminrealm,
                                      action=action, active=True,
                                      realm=realm, resolver=resolver, user=user,
-                                     client=client)
+                                     client=client, sort_by_priority=True)
+        # If unique = True, only consider the policies with the highest priority
+        if policies and unique:
+            highest_priority = policies[0]['priority']
+            policies = [p for p in policies if p['priority'] == highest_priority]
         for pol in policies:
             action_dict = pol.get("action", {})
             action_value = action_dict.get(action, "")
@@ -635,10 +674,11 @@ class PolicyClass(object):
 
         # reduce the entries to unique entries
         action_values = list(set(action_values))
-        if unique:
-            if len(action_values) > 1:
-                raise PolicyError("There are conflicting %s"
-                                  " definitions!" % action)
+        # Check if the policies with the highest priority agree on the action values
+        if unique and len(action_values) > 1:
+            names = [p['name'] for p in policies]
+            raise PolicyError(u"There are policies with conflicting actions: {!r}".format(names))
+
         return action_values
 
     @log_with(log)
@@ -797,7 +837,7 @@ class PolicyClass(object):
 @log_with(log)
 def set_policy(name=None, scope=None, action=None, realm=None, resolver=None,
                user=None, time=None, client=None, active=True,
-               adminrealm=None, check_all_resolvers=False):
+               adminrealm=None, priority=None, check_all_resolvers=False):
     """
     Function to set a policy.
     If the policy with this name already exists, it updates the policy.
@@ -814,6 +854,8 @@ def set_policy(name=None, scope=None, action=None, realm=None, resolver=None,
     :param client: A client IP with optionally a subnet like 172.16.0.0/16
     :param active: If the policy is active or not
     :type active: bool
+    :param priority: the priority of the policy (smaller values having higher priority)
+    :type priority: int
     :param check_all_resolvers: If all the resolvers of a user should be
         checked with this policy
     :type check_all_resolvers: bool
@@ -822,6 +864,10 @@ def set_policy(name=None, scope=None, action=None, realm=None, resolver=None,
     """
     if type(active) in [str, unicode]:
         active = active.lower() == "true"
+    if type(priority) in [str, unicode]:
+        priority = int(priority)
+    if priority is not None and priority <= 0:
+        raise ParameterError("Priority must be at least 1")
     if type(check_all_resolvers) in [str, unicode]:
         check_all_resolvers = check_all_resolvers.lower() == "true"
     if type(action) == dict:
@@ -865,6 +911,8 @@ def set_policy(name=None, scope=None, action=None, realm=None, resolver=None,
             p1.client = client
         if time is not None:
             p1.time = time
+        if priority is not None:
+            p1.priority = priority
         p1.active = active
         p1.check_all_resolvers = check_all_resolvers
         save_config_timestamp()
@@ -875,6 +923,7 @@ def set_policy(name=None, scope=None, action=None, realm=None, resolver=None,
         ret = Policy(name, action=action, scope=scope, realm=realm,
                      user=user, time=time, client=client, active=active,
                      resolver=resolver, adminrealm=adminrealm,
+                     priority=priority,
                      check_all_resolvers=check_all_resolvers).save()
     return ret
 
@@ -962,7 +1011,8 @@ def import_policies(file_contents):
                          user=ast.literal_eval(policy.get("user", "[]")),
                          resolver=ast.literal_eval(policy.get("resolver", "[]")),
                          client=ast.literal_eval(policy.get("client", "[]")),
-                         time=policy.get("time", "")
+                         time=policy.get("time", ""),
+                         priority=policy.get("priority", "1")
                          )
         if ret > 0:
             log.debug("import policy {0!s}: {1!s}".format(policy_name, ret))
@@ -1281,6 +1331,17 @@ def get_static_policy_definitions(scope=None):
                                                       "definitions."),
                                             'mainmenu': [MAIN_MENU.CONFIG],
                                             'group': GROUP.SYSTEM},
+            ACTION.PERIODICTASKWRITE: {'type': 'bool',
+                                       'desc': _("Admin is allowed to write "
+                                                 "periodic task definitions."),
+                                            'mainmenu': [MAIN_MENU.CONFIG],
+                                            'group': GROUP.SYSTEM},
+            ACTION.STATISTICSREAD: {'type': 'bool',
+                                    'desc': _("Admin is allowed to read statistics data."),
+                                    'group': GROUP.SYSTEM},
+            ACTION.STATISTICSDELETE: {'type': 'bool',
+                                    'desc': _("Admin is allowed to delete statistics data."),
+                                    'group': GROUP.SYSTEM},
             ACTION.EVENTHANDLINGWRITE: {'type': 'bool',
                                         'desc': _("Admin is allowed to write "
                                                   "and modify the event "
@@ -1496,6 +1557,11 @@ def get_static_policy_definitions(scope=None):
                 'desc': _('This is a whitespace separated list of tokentypes, '
                           'that can be used with challenge response.')
             },
+            ACTION.CHALLENGETEXT: {
+                'type': 'str',
+                'desc': _('Use an alternate challenge text for telling the '
+                          'user to enter an OTP value.')
+            },
             ACTION.PASSTHRU: {
                 'type': 'str',
                 'value': radiusconfigs,
@@ -1700,3 +1766,38 @@ def get_static_policy_definitions(scope=None):
     else:
         ret = pol
     return ret
+
+
+def get_action_values_from_options(scope, action, options):
+    """
+    This function is used in the library level to fetch policy action values
+    from a given option dictionary.
+
+    :return: A scalar, string or None
+    """
+    value = None
+    g = options.get("g")
+    if g:
+        user_object = options.get("user")
+        username = None
+        realm = None
+        if user_object:
+            username = user_object.login
+            realm = user_object.realm
+
+        clientip = options.get("clientip")
+        policy_object = g.policy_object
+        value = policy_object. \
+            get_action_values(action=action,
+                              scope=scope,
+                              realm=realm,
+                              user=username,
+                              client=clientip,
+                              unique=True,
+                              allow_white_space_in_action=True)
+        if len(value) >= 1:
+            return value[0]
+        else:
+            return None
+
+    return value

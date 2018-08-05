@@ -30,6 +30,7 @@ The file is tested in tests/test_lib_resolver.py
 
 import logging
 import yaml
+import re
 
 from UserIdResolver import UserIdResolver
 
@@ -43,7 +44,7 @@ from base64 import (b64decode,
 import hashlib
 from privacyidea.lib.crypto import urandom, geturandom
 from privacyidea.lib.utils import (is_true, hash_password, PasswordHash,
-                                   check_sha, check_ssha, otrs_sha256)
+                                   check_sha, check_ssha, otrs_sha256, check_crypt)
 
 log = logging.getLogger(__name__)
 ENCODING = "utf-8"
@@ -126,17 +127,19 @@ class IdResolver (UserIdResolver):
         :return: list of filter conditions
         """
         if where:
-            # this might result in errors if the
-            # administrator enters nonsense
-            (w_column, w_cond, w_value) = where.split()
-            if w_cond.lower() == "like":
-                conditions.append(getattr(table, w_column).like(w_value))
-            elif w_cond == "==":
-                conditions.append(getattr(table, w_column) == w_value)
-            elif w_cond == ">":
-                conditions.append(getattr(table, w_column) > w_value)
-            elif w_cond == "<":
-                conditions.append(getattr(table, w_column) < w_value)
+            parts = re.split(' and ', where, flags=re.IGNORECASE)
+            for part in parts:
+                # this might result in errors if the
+                # administrator enters nonsense
+                (w_column, w_cond, w_value) = part.split()
+                if w_cond.lower() == "like":
+                    conditions.append(getattr(table, w_column).like(w_value))
+                elif w_cond == "==":
+                    conditions.append(getattr(table, w_column) == w_value)
+                elif w_cond == ">":
+                    conditions.append(getattr(table, w_column) > w_value)
+                elif w_cond == "<":
+                    conditions.append(getattr(table, w_column) < w_value)
 
         return conditions
 
@@ -173,6 +176,8 @@ class IdResolver (UserIdResolver):
         elif len(userinfo.get("password")) == 64:
             # OTRS sha256 password
             res = otrs_sha256(database_pw, password)
+        elif database_pw[:3] in ["$1$", "$6$"]:
+            res = check_crypt(database_pw, password)
 
         return res
 
@@ -343,7 +348,7 @@ class IdResolver (UserIdResolver):
         self.password = config.get('Password', "")
         self.table = config.get('Table', "")
         self._editable = config.get("Editable", False)
-        self.password_hash_type = config.get("Password_Hash_Type")
+        self.password_hash_type = config.get("Password_Hash_Type", "SSHA256")
         usermap = config.get('Map', {})
         self.map = yaml.safe_load(usermap)
         self.reverse_map = dict([[v, k] for k, v in self.map.items()])
@@ -500,37 +505,31 @@ class IdResolver (UserIdResolver):
         determine the way how to create the UID.
         """
         attributes = attributes or {}
-        if "password" in attributes and self.password_hash_type:
-            attributes["password"] = hash_password(attributes["password"],
-                                                   self.password_hash_type)
-
-        kwargs = self._attributes_to_db_columns(attributes)
+        kwargs = self.prepare_attributes_for_db(attributes)
         log.debug("Insert new user with attributes {0!s}".format(kwargs))
         r = self.TABLE.insert(**kwargs)
         self.db.commit()
         # Return the UID of the new object
         return getattr(r, self.map.get("userid"))
 
-    def _attributes_to_db_columns(self, attributes):
+    def prepare_attributes_for_db(self, attributes):
         """
-        takes the attributes and maps them to the DB columns
-        :param attributes:
-        :return: dict with column name as keys and values
+        Given a dictionary of attributes, return a dictionary
+        mapping columns to values.
+        If the attributes contain a password, hash the password according to the
+        configured password hash type.
+
+        :param attributes: attributes dictionary
+        :return: dictionary with column name as keys
         """
+        attributes = attributes.copy()
+        if "password" in attributes:
+            attributes["password"] = hash_password(attributes["password"],
+                                                   self.password_hash_type)
         columns = {}
-        for fieldname in attributes.keys():
-            if self.map.get(fieldname):
-                if fieldname == "password":
-                    password = attributes.get(fieldname)
-                    # Create a {SSHA256} password
-                    salt = geturandom(16)
-                    hr = hashlib.sha256(password)
-                    hr.update(salt)
-                    hash_bin = hr.digest()
-                    hash_b64 = b64encode(hash_bin + salt)
-                    columns[self.map.get(fieldname)] = "{SSHA256}" + hash_b64
-                else:
-                    columns[self.map.get(fieldname)] = attributes.get(fieldname)
+        for fieldname in attributes:
+            if fieldname in self.map:
+                columns[self.map[fieldname]] = attributes[fieldname]
         return columns
 
     def delete_user(self, uid):
@@ -577,7 +576,7 @@ class IdResolver (UserIdResolver):
         :return: True in case of success
         """
         attributes = attributes or {}
-        params = self._attributes_to_db_columns(attributes)
+        params = self.prepare_attributes_for_db(attributes)
         kwargs = {self.map.get("userid"): uid}
         r = self.TABLE.filter_by(**kwargs).update(params)
         self.db.commit()

@@ -23,7 +23,8 @@ from privacyidea.api.lib.prepolicy import (check_token_upload,
                                            mangle, is_remote_user_allowed,
                                            required_email, auditlog_age,
                                            papertoken_count, allowed_audit_realm,
-                                           u2ftoken_verify_cert)
+                                           u2ftoken_verify_cert,
+                                           tantoken_count)
 from privacyidea.api.lib.postpolicy import (check_serial, check_tokentype,
                                             check_tokeninfo,
                                             no_detail_on_success,
@@ -36,6 +37,7 @@ from privacyidea.lib.token import (init_token, get_tokens, remove_token,
                                    set_realms, check_user_pass, unassign_token)
 from privacyidea.lib.user import User
 from privacyidea.lib.tokens.papertoken import PAPERACTION
+from privacyidea.lib.tokens.tantoken import TANACTION
 
 from flask import Response, Request, g, current_app
 from werkzeug.test import EnvironBuilder
@@ -294,6 +296,17 @@ class PrePolicyDecoratorTestCase(MyTestCase):
         self.assertRaises(PolicyError,
                           check_max_token_user, req)
 
+        # Now we set another policy for the user max_token = 12.
+        # This way, the user should be allowed to enroll tokens again, since there
+        # are two policies matching for the user and the maximum is 12.
+        set_policy(name="pol_max_12",
+                   scope=SCOPE.ENROLL,
+                   action="{0!s}={1!s}".format(ACTION.MAXTOKENUSER, 12))
+        g.policy_object = PolicyClass()
+        # new check_max_token_user should not raise an error!
+        self.assertTrue(check_max_token_user(req))
+        delete_policy("pol_max_12")
+        g.policy_object = PolicyClass()
 
         # The check for a token, that has no username in it, must not
         # succeed. I.e. in the realm new tokens must be enrollable.
@@ -1130,6 +1143,31 @@ class PrePolicyDecoratorTestCase(MyTestCase):
 
         # finally delete policy
         delete_policy("paperpol")
+
+    def test_19_tantoken_count(self):
+        g.logged_in_user = {"username": "admin1",
+                            "role": "admin"}
+        builder = EnvironBuilder(method='POST',
+                                 headers={})
+        env = builder.get_environ()
+        # Set the remote address so that we can filter for it
+        env["REMOTE_ADDR"] = "10.0.0.1"
+        g.client_ip = env["REMOTE_ADDR"]
+        req = Request(env)
+        set_policy(name="tanpol",
+                   scope=SCOPE.ENROLL,
+                   action="{0!s}=10".format(TANACTION.TANTOKEN_COUNT))
+        g.policy_object = PolicyClass()
+
+        # request, that matches the policy
+        req.all_data = {}
+        req.User = User()
+        tantoken_count(req)
+        # Check if the tantoken count is set
+        self.assertEqual(req.all_data.get("tantoken_count"), "10")
+
+        # finally delete policy
+        delete_policy("tanpol")
 
     def test_20_allowed_audit_realm(self):
         g.logged_in_user = {"username": "admin1",

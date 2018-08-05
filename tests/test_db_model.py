@@ -1,3 +1,4 @@
+# coding: utf-8
 from privacyidea.models import (Token,
                                 Resolver,
                                 ResolverRealm,
@@ -13,8 +14,10 @@ from privacyidea.models import (Token,
                                 EventHandler, SMSGatewayOption, SMSGateway,
                                 EventHandlerCondition, PrivacyIDEAServer,
                                 ClientApplication, Subscription, UserCache,
-                                EventCounter)
+                                EventCounter, PeriodicTask, PeriodicTaskLastRun,
+                                PeriodicTaskOption, MonitoringStats)
 from .base import MyTestCase
+from dateutil.tz import tzutc
 from datetime import datetime
 from datetime import timedelta
 
@@ -705,6 +708,141 @@ class TokenModelTestCase(MyTestCase):
         counter3 = EventCounter.query.filter_by(counter_name="test_counter").first()
         self.assertEqual(counter3.counter_value, 12)
 
-        counter3.delete()
-        counter3 = EventCounter.query.filter_by(counter_name="test_counter").first()
-        self.assertEqual(counter3, None)
+        counter3.decrease()
+
+        counter4 = EventCounter.query.filter_by(counter_name="test_counter").first()
+        self.assertEqual(counter4.counter_value, 11)
+
+        counter4.decrease(allow_negative=True)
+
+        counter5 = EventCounter.query.filter_by(counter_name="test_counter").first()
+        self.assertEqual(counter5.counter_value, 10)
+
+        counter5.reset()
+
+        counter6 = EventCounter.query.filter_by(counter_name="test_counter").first()
+        self.assertEqual(counter6.counter_value, 0)
+
+        counter6.decrease(allow_negative=True)
+        counter6.decrease(allow_negative=True)
+
+        counter7 = EventCounter.query.filter_by(counter_name="test_counter").first()
+        self.assertEqual(counter7.counter_value, -2)
+
+        counter7.decrease(allow_negative=False)
+
+        counter8 = EventCounter.query.filter_by(counter_name="test_counter").first()
+        self.assertEqual(counter8.counter_value, 0)
+
+        counter8.delete()
+        counter9 = EventCounter.query.filter_by(counter_name="test_counter").first()
+        self.assertEqual(counter9, None)
+
+    def test_26_periodictask(self):
+        task1 = PeriodicTask("task1", False, "0 5 * * *", ["localhost"], "some.module", {
+            "key1": "value2",
+            "KEY2": True,
+            "key3": u"öfføff",
+        })
+        task2 = PeriodicTask("some other task", True, "0 6 * * *", ["localhost"], "some.other.module", {
+            "foo": "bar"
+        })
+        self.assertEqual(PeriodicTask.query.filter_by(name="task1").one(), task1)
+        self.assertEqual(PeriodicTask.query.filter_by(name="some other task").one(), task2)
+        self.assertEqual(PeriodicTaskOption.query.filter_by(periodictask_id=task1.id, key="KEY2").one().value,
+                         "True")
+        # Values are converted to strings
+        self.assertEqual(task1.get(), {
+            "id": task1.id,
+            "name": "task1",
+            "active": False,
+            "interval": "0 5 * * *",
+            "nodes": ["localhost"],
+            "taskmodule": "some.module",
+            "options": {
+                "key1": "value2",
+                "KEY2": "True",
+                "key3": u"öfføff",
+            },
+            "last_runs": {}})
+
+        # register a run
+        task1.set_last_run("localhost", datetime(2018, 3, 4, 5, 6, 7))
+
+        # assert we can update the task
+        PeriodicTask("task one", True, "0 8 * * *", ["localhost", "otherhost"], "some.module", {
+            "KEY2": "value number 2",
+            "key 4": 1234
+        }, id=task1.id)
+        # the first run for otherhost
+        task1.set_last_run("otherhost", datetime(2018, 8, 9, 10, 11, 12))
+        result = PeriodicTask.query.filter_by(name="task one").one().get()
+        self.assertEqual(result,
+                         {
+                             "id": task1.id,
+                             "active": True,
+                             "name": "task one",
+                             "interval": "0 8 * * *",
+                             "nodes": ["localhost", "otherhost"],
+                             "taskmodule": "some.module",
+                             "options": {"KEY2": "value number 2",
+                                         "key 4": "1234"},
+                             "last_runs": {
+                                 "localhost": datetime(2018, 3, 4, 5, 6, 7, tzinfo=tzutc()),
+                                 "otherhost": datetime(2018, 8, 9, 10, 11, 12, tzinfo=tzutc()),
+                             }
+                         })
+        # assert all old options are removed
+        self.assertEqual(PeriodicTaskOption.query.filter_by(periodictask_id=task1.id, key="key3").count(), 0)
+        # the second run for localhost
+        task1.set_last_run("localhost", datetime(2018, 3, 4, 5, 6, 8))
+        result = PeriodicTask.query.filter_by(name="task one").one().get()
+        self.assertEqual(result,
+                         {
+                             "id": task1.id,
+                             "active": True,
+                             "name": "task one",
+                             "interval": "0 8 * * *",
+                             "nodes": ["localhost", "otherhost"],
+                             "taskmodule": "some.module",
+                             "options": {"KEY2": "value number 2",
+                                         "key 4": "1234"},
+                             "last_runs": {
+                                 "localhost": datetime(2018, 3, 4, 5, 6, 8, tzinfo=tzutc()),
+                                 "otherhost": datetime(2018, 8, 9, 10, 11, 12, tzinfo=tzutc()),
+                             }
+                         })
+
+        # remove "localhost", assert the last run is removed
+        PeriodicTask("task one", True, "0 8 * * *", ["otherhost"], "some.module", {"foo": "bar"}, id=task1.id)
+        self.assertEqual(PeriodicTaskOption.query.filter_by(periodictask_id=task1.id).count(), 1)
+        self.assertEqual(PeriodicTaskLastRun.query.filter_by(periodictask_id=task1.id).one().node, "otherhost")
+        # naive timestamp in the database
+        self.assertEqual(PeriodicTaskLastRun.query.filter_by(periodictask_id=task1.id).one().timestamp,
+                         datetime(2018, 8, 9, 10, 11, 12, tzinfo=None))
+        self.assertEqual(PeriodicTaskLastRun.query.filter_by(periodictask_id=task1.id).one().aware_timestamp,
+                         datetime(2018, 8, 9, 10, 11, 12, tzinfo=tzutc()))
+
+        # remove the tasks, everything is removed
+        task1.delete()
+        self.assertEqual(PeriodicTaskOption.query.count(), 1) # from task2
+        self.assertEqual(PeriodicTaskLastRun.query.count(), 0)
+        task2.delete()
+        self.assertEqual(PeriodicTaskOption.query.count(), 0)
+
+    def test_27_monitoring_stats(self):
+        # Simple test to write data to the monitoring stats table
+        key1 = "user_count"
+        key2 = "successful_auth"
+        utcnow = datetime.utcnow()
+        MonitoringStats(utcnow - timedelta(seconds=1), key1, 15)
+        MonitoringStats(utcnow, key1, 21)
+        MonitoringStats(utcnow, key2, 123)
+
+        self.assertEqual(MonitoringStats.query.filter_by(stats_key=key1).count(), 2)
+        self.assertEqual(MonitoringStats.query.filter_by(stats_key=key2).count(), 1)
+
+        # Delete all entries
+        MonitoringStats.query.delete()
+        self.assertEqual(MonitoringStats.query.filter_by(stats_key=key1).count(), 0)
+        self.assertEqual(MonitoringStats.query.filter_by(stats_key=key2).count(), 0)

@@ -177,6 +177,12 @@ class TokenTestCase(MyTestCase):
         ttype = get_token_type("hotptoken")
         self.assertTrue(ttype == "hotp", ttype)
 
+        # test correct behavior with wildcards
+        self.assertEqual(get_token_type("SE1"), "totp")
+        self.assertEqual(get_token_type("SE*"), "")
+        self.assertEqual(get_token_type("*1"), "")
+        self.assertEqual(get_token_type("hotptoke*"), "")
+
     def test_04_check_serial(self):
         r, nserial = check_serial("hotptoken")
         self.assertFalse(r, (r, nserial))
@@ -1326,6 +1332,18 @@ class TokenTestCase(MyTestCase):
         self.assertEqual(tok.get_tokeninfo("timeStep"), "30")
         self.assertEqual(tok.get_otp_count(), 121212)
         remove_token("IMP001")
+
+    def test_53_import_token(self):
+        # Import token from a file with a user object
+        tok = import_token("IMP002",
+                           {"type": "totp",
+                            "otpkey": self.otpkey,
+                            "user": {"username": "cornelius",
+                                     "resolver": self.resolvername1,
+                                     "realm": self.realm1}})
+        self.assertEqual(tok.get_user_id(), "1000")
+        self.assertEqual(tok.get_user_displayname(), (u'cornelius_realm1', u'Cornelius '))
+        remove_token("IMP002")
 
 
 class TokenFailCounterTestCase(MyTestCase):

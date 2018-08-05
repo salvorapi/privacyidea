@@ -51,6 +51,7 @@ from .token import token_blueprint
 from .system import system_blueprint
 from .smtpserver import smtpserver_blueprint
 from .radiusserver import radiusserver_blueprint
+from .periodictask import periodictask_blueprint
 from .privacyideaserver import privacyideaserver_blueprint
 from .recover import recover_blueprint
 from .register import register_blueprint
@@ -58,6 +59,7 @@ from .event import eventhandling_blueprint
 from .smsgateway import smsgateway_blueprint
 from .clienttype import client_blueprint
 from .subscriptions import subscriptions_blueprint
+from .monitoring import monitoring_blueprint
 from privacyidea.api.lib.postpolicy import postrequest, sign_response
 from ..lib.error import (privacyIDEAError,
                          AuthError, UserError,
@@ -89,9 +91,11 @@ def before_user_request():
 @application_blueprint.before_request
 @smtpserver_blueprint.before_request
 @eventhandling_blueprint.before_request
+@periodictask_blueprint.before_request
 @smsgateway_blueprint.before_request
 @client_blueprint.before_request
 @subscriptions_blueprint.before_request
+@monitoring_blueprint.before_request
 @admin_required
 def before_admin_request():
     before_request()
@@ -130,7 +134,7 @@ def before_request():
                          request.host
     # Already get some typical parameters to log
     serial = getParam(request.all_data, "serial")
-    if serial and "**" not in serial:
+    if serial:
         tokentype = get_token_type(serial)
     else:
         tokentype = None
@@ -198,9 +202,11 @@ def before_request():
 @caconnector_blueprint.after_request
 @smtpserver_blueprint.after_request
 @radiusserver_blueprint.after_request
+@periodictask_blueprint.after_request
 @privacyideaserver_blueprint.after_request
 @client_blueprint.after_request
 @subscriptions_blueprint.after_request
+@monitoring_blueprint.after_request
 @postrequest(sign_response, request=request)
 def after_request(response):
     """
@@ -228,14 +234,14 @@ def after_request(response):
 @application_blueprint.app_errorhandler(AuthError)
 @smtpserver_blueprint.app_errorhandler(AuthError)
 @subscriptions_blueprint.app_errorhandler(AuthError)
+@monitoring_blueprint.app_errorhandler(AuthError)
 @postrequest(sign_response, request=request)
 def auth_error(error):
     if "audit_object" in g:
-        g.audit_object.log({"info": error.description})
+        g.audit_object.log({"info": error.message})
         g.audit_object.finalize_log()
-    return send_error(error.description,
-                      error_code=-401,
-                      details=error.details), error.status_code
+    return send_error(error.message,
+                      error_code=error.id), 401
 
 
 @system_blueprint.errorhandler(PolicyError)
@@ -251,12 +257,13 @@ def auth_error(error):
 @register_blueprint.app_errorhandler(PolicyError)
 @recover_blueprint.app_errorhandler(PolicyError)
 @subscriptions_blueprint.app_errorhandler(PolicyError)
+@monitoring_blueprint.app_errorhandler(PolicyError)
 @postrequest(sign_response, request=request)
 def policy_error(error):
     if "audit_object" in g:
         g.audit_object.log({"info": error.message})
         g.audit_object.finalize_log()
-    return send_error(error.message), error.id
+    return send_error(error.message, error_code=error.id), 403
 
 
 @system_blueprint.app_errorhandler(privacyIDEAError)
@@ -272,6 +279,7 @@ def policy_error(error):
 @register_blueprint.app_errorhandler(privacyIDEAError)
 @recover_blueprint.app_errorhandler(privacyIDEAError)
 @subscriptions_blueprint.app_errorhandler(privacyIDEAError)
+@monitoring_blueprint.app_errorhandler(privacyIDEAError)
 @postrequest(sign_response, request=request)
 def privacyidea_error(error):
     """
@@ -298,6 +306,7 @@ def privacyidea_error(error):
 @register_blueprint.app_errorhandler(500)
 @recover_blueprint.app_errorhandler(500)
 @subscriptions_blueprint.app_errorhandler(500)
+@monitoring_blueprint.app_errorhandler(500)
 @postrequest(sign_response, request=request)
 def internal_error(error):
     """

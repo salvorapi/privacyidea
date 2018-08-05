@@ -40,7 +40,7 @@ import re
 from datetime import timedelta, datetime
 from datetime import time as dt_time
 from dateutil.parser import parse as parse_date_string
-from dateutil.tz import tzlocal
+from dateutil.tz import tzlocal, tzutc
 from netaddr import IPAddress, IPNetwork, AddrFormatError
 import hashlib
 import crypt
@@ -380,33 +380,6 @@ def get_data_from_params(params, exclude_params, config_description, module,
                         unicode(params)))
 
     return data, types, desc
-
-
-def parse_timedelta(delta):
-    """
-    This parses a string that contains a time delta for the last_auth policy
-    in the format like
-    1m (minute), 1h, 1d, 1y.
-
-    :param delta: The time delta
-    :type delta: basestring
-    :return: timedelta
-    """
-    delta = delta.strip().replace(" ", "")
-    time_specifier = delta[-1].lower()
-    if time_specifier not in ["m", "h", "d", "y"]:
-        raise Exception("Invalid time specifier")
-    time = int(delta[:-1])
-    if time_specifier == "h":
-        td = timedelta(hours=time)
-    elif time_specifier == "d":
-        td = timedelta(days=time)
-    elif time_specifier == "y":
-        td = timedelta(days=time*365)
-    else:
-        td = timedelta(minutes=time)
-
-    return td
 
 
 def parse_timelimit(limit):
@@ -779,10 +752,10 @@ def parse_legacy_time(ts, return_date=False):
         return d.strftime(DATE_FORMAT)
 
 
-def parse_time_delta(s):
+def parse_timedelta(s):
     """
     parses a string like +5d or -30m and returns a timedelta.
-    Allowed identifiers are s, m, h, d.
+    Allowed identifiers are s, m, h, d, y.
     
     :param s: a string like +30m or -5d
     :return: timedelta 
@@ -791,7 +764,7 @@ def parse_time_delta(s):
     minutes = 0
     hours = 0
     days = 0
-    m = re.match("([+-])(\d+)([smhd])$", s)
+    m = re.match("\s*([+-]?)\s*(\d+)\s*([smhdy])\s*$", s)
     if not m:
         log.warning("Unsupported timedelta: {0!r}".format(s))
         raise Exception("Unsupported timedelta")
@@ -806,6 +779,8 @@ def parse_time_delta(s):
         hours = count
     elif m.group(3) == "d":
         days = count
+    elif m.group(3) == "y":
+        days = 365 * count
 
     td = timedelta(seconds=seconds, minutes=minutes, hours=hours, days=days)
     return td
@@ -834,7 +809,7 @@ def parse_time_offset_from_now(s):
         s2 = m.group(2)
         s3 = m.group(3)
         s = s1 + s3
-        td = parse_time_delta(s2)
+        td = parse_timedelta(s2)
 
     return s, td
 
@@ -874,11 +849,19 @@ def hash_password(password, hashtype):
         return "{SSHA512}" + pw
     elif hashtype == "OTRS":
         password = hashlib.sha256(password).hexdigest()
+    elif hashtype == "MD5CRYPT":
+        salt = geturandom(8, True)
+        password = crypt.crypt(password, "$1$" + salt + "$")
+    elif hashtype == "SHA512CRYPT":
+        salt = geturandom(8, True)
+        password = crypt.crypt(password, "$6$" + salt + "$")
     else:
         raise Exception("Unsupported password hashtype. Use PHPASS, SHA, "
                         "SSHA, SSHA256, SSHA512, OTRS.")
     return password
 
+def check_crypt(pw_hash, password):
+    return crypt.crypt(password, pw_hash) == pw_hash
 
 def check_ssha(pw_hash, password, hashfunc, length):
     pw_hash_bin = b64decode(pw_hash.split("}")[1])
@@ -1098,3 +1081,25 @@ def parse_int(s, default=0):
         pass
 
     return i
+
+
+def convert_column_to_unicode(value):
+    """
+    Helper function for models. If ``value`` is None or a unicode object, do nothing.
+    Otherwise, convert it to a unicode object.
+    :return: a unicode object or None
+    """
+    if value is None or isinstance(value, unicode):
+        return value
+    else:
+        return unicode(value)
+
+
+def convert_timestamp_to_utc(timestamp):
+    """
+    Convert a timezone-aware datetime object to a naive UTC datetime.
+    :param timestamp: datetime object that should be converted
+    :type timestamp: timezone-aware datetime object
+    :return: timezone-naive datetime object
+    """
+    return timestamp.astimezone(tzutc()).replace(tzinfo=None)

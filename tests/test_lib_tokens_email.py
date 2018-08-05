@@ -8,6 +8,7 @@ from .base import MyTestCase, FakeFlaskG
 from privacyidea.lib.resolver import (save_resolver)
 from privacyidea.lib.realm import (set_realm)
 from privacyidea.lib.user import (User)
+from privacyidea.lib.utils import is_true
 from privacyidea.lib.tokenclass import DATE_FORMAT
 from privacyidea.lib.tokens.emailtoken import EmailTokenClass, EMAILACTION
 from privacyidea.models import (Token, Config, Challenge)
@@ -15,6 +16,7 @@ from privacyidea.lib.config import (set_privacyidea_config, set_prepend_pin,
                                     delete_privacyidea_config)
 from privacyidea.lib.policy import set_policy, SCOPE, PolicyClass
 from privacyidea.lib.smtpserver import add_smtpserver, delete_smtpserver
+from privacyidea.lib import _
 import datetime
 from dateutil.tz import tzlocal
 import smtpmock
@@ -82,7 +84,7 @@ class EmailTokenTestCase(MyTestCase):
         token = EmailTokenClass(db_token)
         token.update({"dynamic_email": True})
         token.save()
-        self.assertEqual(token.get_tokeninfo("dynamic_email"), "1")
+        self.assertTrue(is_true(token.get_tokeninfo("dynamic_email")))
         self.assertTrue(token.token.serial == self.serial2, token)
         self.assertTrue(token.token.tokentype == "email", token.token)
         self.assertTrue(token.type == "email", token.type)
@@ -406,8 +408,8 @@ class EmailTokenTestCase(MyTestCase):
         self.assertTrue(c[0], c)
         display_message = c[1]
         self.assertTrue(c[3].get("state"), transactionid)
-        self.assertEqual(display_message, "Enter the OTP from the Email:")
-        _, mimetype = token._get_email_text_or_subject(options, EMAILACTION.EMAILTEXT)
+        self.assertEqual(display_message, _("Enter the OTP from the Email:"))
+        _n, mimetype = token._get_email_text_or_subject(options, EMAILACTION.EMAILTEXT)
         self.assertEqual(mimetype, "plain")
 
         # Test AUTOEMAIL
@@ -445,7 +447,7 @@ class EmailTokenTestCase(MyTestCase):
         self.assertTrue(c[0], c)
         display_message = c[1]
         self.assertTrue(c[3].get("state"), transactionid)
-        self.assertEqual(display_message, "Enter the OTP from the Email:")
+        self.assertEqual(display_message, _("Enter the OTP from the Email:"))
 
     @smtpmock.activate
     def test_20_sending_email_exception(self):

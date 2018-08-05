@@ -5,7 +5,7 @@ import stat
 import sys
 
 #VERSION="2.1dev4"
-VERSION="2.22"
+VERSION="2.23dev2"
 
 # Taken from kennethreitz/requests/setup.py
 package_directory = os.path.realpath(os.path.dirname(__file__))
@@ -51,10 +51,10 @@ install_requires = ["Flask>=0.10.1",
                     "docutils>=0.12",
                     "funcparserlib>=0.3.6",
                     "itsdangerous>=0.24",
-                    "ldap3==2.1.1",
+                    "ldap3>=2.5",
                     "netaddr>=0.7.12",
                     "passlib>=1.6.2",
-                    "pyasn1>=0.1.7",
+                    "pyasn1>=0.4.2",
                     "pyOpenSSL>=0.15.1",
                     "pycparser>=2.10",
                     "pycrypto>=2.6.1",
@@ -67,7 +67,8 @@ install_requires = ["Flask>=0.10.1",
                     "lxml>=3.3",
                     "python-gnupg>=0.3.8",
                     "defusedxml>=0.4.1",
-                    "flask-babel>=0.9"
+                    "flask-babel>=0.9",
+                    "croniter>=0.3.8"
                     ]
 
 # For python 2.6 we need additional dependency importlib

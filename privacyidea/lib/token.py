@@ -80,7 +80,7 @@ from privacyidea.lib.config import get_from_config
 from privacyidea.lib.config import (get_token_class, get_token_prefix,
                                     get_token_types,
                                     get_inc_fail_count_on_false_pin)
-from privacyidea.lib.user import get_user_info
+from privacyidea.lib.user import get_user_info, User
 from privacyidea.lib import _
 from privacyidea.lib.realm import realm_is_defined
 from privacyidea.lib.resolver import get_resolver_object
@@ -446,13 +446,17 @@ def get_tokens_paginate(tokentype=None, realm=None, assigned=None, user=None,
 @log_with(log)
 def get_token_type(serial):
     """
-    Returns the tokentype of a given serial number
+    Returns the tokentype of a given serial number. If the token does
+    not exist or can not be deterimined, an empty string is returned.
 
     :param serial: the serial number of the to be searched token
     :type serial: string
     :return: tokentype
     :rtype: string
     """
+    if serial and "*" in serial:
+        return ""
+
     tokenobject_list = get_tokens(serial=serial)
 
     tokentype = ""
@@ -460,6 +464,7 @@ def get_token_type(serial):
         tokentype = tokenobject.type
 
     return tokentype
+
 
 @log_with(log)
 def check_serial(serial):
@@ -862,19 +867,24 @@ def import_token(serial, token_dict, default_hashlib=None, tokenrealms=None):
     :return: the token object
     """
     init_param = {'serial': serial,
-                  'type': token_dict['type'],
-                      'description': token_dict.get("description",
-                                                        "imported"),
-                      'otpkey': token_dict['otpkey'],
-                      'otplen': token_dict.get('otplen'),
-                      'timeStep': token_dict.get('timeStep'),
-                      'hashlib': token_dict.get('hashlib')}
+                  'description': token_dict.get("description",
+                                                "imported")}
+    for p in ['type', 'otpkey', 'otplen', 'timeStep', 'hashlib', 'tans']:
+        if p in token_dict:
+            init_param[p] = token_dict[p]
+
+    user_obj = None
+    if token_dict.get("user"):
+        user_obj = User(token_dict.get("user").get("username"),
+                        token_dict.get("user").get("realm"),
+                        token_dict.get("user").get("resolver"))
 
     if default_hashlib and default_hashlib != "auto":
         init_param['hashlib'] = default_hashlib
 
     # Imported tokens are usually hardware tokens
-    token = init_token(init_param, tokenrealms=tokenrealms,
+    token = init_token(init_param, user=user_obj,
+                       tokenrealms=tokenrealms,
                        tokenkind=TOKENKIND.HARDWARE)
     if token_dict.get("counter"):
         token.set_otp_count(token_dict.get("counter"))
@@ -1139,7 +1149,7 @@ def assign_token(serial, user, pin=None, encrypt_pin=False):
         raise TokenAdminError("Token assign failed for {0!r}/{1!s} : {2!r}".format(user, serial, e), id=1105)
 
     log.debug("successfully assigned token with serial "
-              "%r to user %r" % (serial, user))
+              "{0!r} to user {1!r}".format(serial, user))
     return True
 
 
@@ -2154,8 +2164,8 @@ def check_token_list(tokenobject_list, passw, user=None, options=None):
         else:
             reply_dict["multi_challenge"] = []
             transaction_id = None
+            message_list = []
             for token_obj in active_challenge_token:
-                message_list = []
                 # Check if the max auth is succeeded
                 if token_obj.check_all(message_list):
                     r_chal, message, transaction_id, attributes = \
@@ -2241,8 +2251,7 @@ def get_dynamic_policy_definitions(scope=None):
     for ttype in get_token_types():
         pol[SCOPE.ADMIN]["enroll{0!s}".format(ttype.upper())] \
             = {'type': 'bool',
-               'desc': _('Admin is allowed to initalize %s tokens.') %
-                       ttype.upper(),
+               'desc': _(u"Admin is allowed to initalize {0!s} tokens.").format(ttype.upper()),
                'mainmenu': [MAIN_MENU.TOKENS],
                'group': GROUP.ENROLLMENT}
 
@@ -2250,7 +2259,7 @@ def get_dynamic_policy_definitions(scope=None):
         if 'enroll' in conf:
             pol[SCOPE.USER]["enroll{0!s}".format(ttype.upper())] = {
                 'type': 'bool',
-                'desc': _("The user is allowed to enroll a %s token.") % ttype,
+                'desc': _(u"The user is allowed to enroll a {0!s} token.").format(ttype.upper()),
                 'mainmenu': [MAIN_MENU.TOKENS],
                 'group': GROUP.ENROLLMENT}
 

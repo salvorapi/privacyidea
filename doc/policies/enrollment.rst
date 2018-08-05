@@ -30,6 +30,10 @@ This is the maximum allowed number of tokens in the specified realm.
    imported a pool of hardware tokens you can thus limit the
    consumed hardware tokens per realm.
 
+.. note:: If there are multiple matching policies, the *highest* maximum
+   allowed number of tokens among the matching policies is enforced.
+   Policy priorities are ignored.
+
 max_token_per_user
 ~~~~~~~~~~~~~~~~~~
 
@@ -40,6 +44,9 @@ Limit the maximum number of tokens per user in this realm.
 .. note:: If you do not set this action, a user may have
    unlimited tokens assigned.
 
+.. note:: If there are multiple matching policies, the *highest* maximum
+   allowed number of tokens among the matching policies is enforced.
+   Policy priorities are ignored.
 
 tokenissuer
 ~~~~~~~~~~~
@@ -239,6 +246,14 @@ type: int
 
 This is a specific action of the paper token. Here the administrator can
 define how many OTP values should be printed on the paper token.
+
+tantoken_count
+~~~~~~~~~~~~~~
+
+type: int
+
+This is a specific action for the TAN token. The administrator can define
+how many TANs will be generated and printed.
 
 
 u2f_req

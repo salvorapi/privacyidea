@@ -12,6 +12,7 @@ from privacyidea.lib.token import check_serial_pass
 from privacyidea.lib.tokenclass import DATE_FORMAT
 from privacyidea.lib.config import set_privacyidea_config, delete_privacyidea_config
 from dateutil.tz import tzlocal
+from privacyidea.lib import _
 
 PWFILE = "tests/testdata/passwords"
 IMPORTFILE = "tests/testdata/import.oath"
@@ -1059,7 +1060,7 @@ class APITokenTestCase(MyTestCase):
         r = check_serial_pass(serial, "pin")
         # The OTP PIN is correct
         self.assertEqual(r[0], False)
-        self.assertEqual(r[1].get("message"), "please enter otp: ")
+        self.assertEqual(r[1].get("message"), _("please enter otp: "))
         transaction_id = r[1].get("transaction_id")
 
         with self.app.test_request_context('/token/challenges/',
@@ -1438,3 +1439,17 @@ class APITokenTestCase(MyTestCase):
             seed = seed_url[len('seed://'):]
             self.assertEqual(len(seed.decode('hex')), 42)
         remove_token(serial)
+
+    def test_27_fail_to_assign_empty_serial(self):
+        with self.app.test_request_context('/token/assign',
+                                           method='POST',
+                                           data={"user": "cornelius",
+                                                 "realm": self.realm1,
+                                                 "serial": "",
+                                                 "pin": "test"},
+                                           headers={'Authorization': self.at}):
+            res = self.app.full_dispatch_request()
+            self.assertTrue(res.status_code == 400, res)
+            result = json.loads(res.data).get("result")
+            self.assertEqual(result.get("status"), False)
+            self.assertEqual(result.get("error").get("code"), 905)
