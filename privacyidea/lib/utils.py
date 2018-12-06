@@ -31,10 +31,11 @@ log = logging.getLogger(__name__)
 import binascii
 import base64
 import qrcode
-import StringIO
-import urllib
+import sqlalchemy
+from six.moves.urllib.parse import urlunparse, urlparse, urlencode
+from io import BytesIO
 from privacyidea.lib.crypto import urandom, geturandom
-from privacyidea.lib.error import ParameterError
+from privacyidea.lib.error import ParameterError, ResourceNotFoundError
 import string
 import re
 from datetime import timedelta, datetime
@@ -182,7 +183,7 @@ def generate_otpkey(key_size=20):
 def create_png(data, alt=None):
     img = qrcode.make(data)
 
-    output = StringIO.StringIO()
+    output = BytesIO()
     img.save(output)
     o_data = output.getvalue()
     output.close()
@@ -211,13 +212,13 @@ def create_img(data, width=0, alt=None, raw=False):
         o_data = create_png(data, alt=alt)
     else:
         o_data = data
-    data_uri = o_data.encode("base64").replace("\n", "")
+    data_uri = binascii.b2a_base64(o_data).replace(b"\n", b"")
 
     if width != 0:
         width_str = " width={0:d} ".format((int(width)))
 
     if alt is not None:
-        val = urllib.urlencode({'alt': alt})
+        val = urlencode({'alt': alt})
         alt_str = " alt={0!r} ".format((val[len('alt='):]))
 
     ret_img = 'data:image/png;base64,{0!s}'.format(data_uri)
@@ -249,21 +250,19 @@ mod2HexDict = dict(zip(modHexChars, hexHexChars))
 
 def modhex_encode(s):
     return ''.join(
-        [hex2ModDict[c] for c in s.encode('hex')]
+        [hex2ModDict[c] for c in binascii.hexlify(s).decode('utf8')]
     )
 # end def modhex_encode
 
 
 def modhex_decode(m):
-    return ''.join(
-        [mod2HexDict[c] for c in m]
-    ).decode('hex')
+    return binascii.unhexlify(''.join([mod2HexDict[c] for c in m]))
 # end def modhex_decode
 
 
 def checksum(msg):
     crc = 0xffff
-    for i in range(0, len(msg) / 2):
+    for i in range(0, len(msg) // 2):
         b = int(msg[i * 2] + msg[(i * 2) + 1], 16)
         crc = crc ^ (b & 0xff)
         for _j in range(0, 8):
@@ -992,7 +991,7 @@ class PasswordHash(object):
         itoa64 = \
             './ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
         outp = '$2a$'
-        outp += chr(ord('0') + self.iteration_count_log2 / 10)
+        outp += chr(ord('0') + self.iteration_count_log2 // 10)
         outp += chr(ord('0') + self.iteration_count_log2 % 10)
         outp += '$'
         cur = 0
@@ -1103,3 +1102,120 @@ def convert_timestamp_to_utc(timestamp):
     :return: timezone-naive datetime object
     """
     return timestamp.astimezone(tzutc()).replace(tzinfo=None)
+
+
+def censor_connect_string(connect_string):
+    """
+    Take a SQLAlchemy connect string and return a sanitized version
+    that can be written to the log without disclosing the password.
+    The password is replaced with "xxxx".
+    In case any error occurs, return "<error when censoring connect string>"
+    """
+    try:
+        parsed = urlparse(connect_string)
+        if parsed.password is not None:
+            # We need to censor the ``netloc`` attribute: user:pass@host
+            _, host = parsed.netloc.rsplit("@", 1)
+            new_netloc = u'{}:{}@{}'.format(parsed.username, 'xxxx', host)
+            # Convert the URL to six components. netloc is component #1.
+            splitted = list(parsed)
+            splitted[1] = new_netloc
+            return urlunparse(splitted)
+        return connect_string
+    except Exception:
+        return "<error when censoring connect string>"
+
+
+def fetch_one_resource(table, **query):
+    """
+    Given an SQLAlchemy table and query keywords, fetch exactly one result and return it.
+    If no results is found, this raises a ``ResourceNotFoundError``.
+    If more than one result is found, this raises SQLAlchemy's ``MultipleResultsFound``
+    """
+    try:
+        return table.query.filter_by(**query).one()
+    except sqlalchemy.orm.exc.NoResultFound:
+        raise ResourceNotFoundError(u"The requested {!s} could not be found.".format(table.__name__))
+
+
+def truncate_comma_list(data, max_len):
+    """
+    This function takes a string with a comma separated list and
+    shortens the longest entries this way, that the final string has a maximum
+    length of max_len
+
+    Shorted entries are marked with a "+" at the end.
+
+    :param data: A comma separated list
+    :type data: basestring
+    :return: shortened string
+    """
+    data = data.split(",")
+    # if there are more entries than the maximum length, we do an early exit
+    if len(data) >= max_len:
+        r = ",".join(data)[:max_len]
+        # Also mark this string
+        r = u"{0!s}+".format(r[:-1])
+        return r
+
+    while len(",".join(data)) > max_len:
+        new_data = []
+        longest = max(data, key=len)
+        for d in data:
+            if d == longest:
+                # Shorten the longest and mark with "+"
+                d = u"{0!s}+".format(d[:-2])
+            new_data.append(d)
+        data = new_data
+    return ",".join(data)
+
+
+def check_pin_policy(pin, policy):
+    """
+    The policy to check a PIN can contain of "c", "n" and "s".
+    "cn" means, that the PIN should contain a character and a number.
+    "+cn" means, that the PIN should contain elements from the group of characters and numbers
+    "-ns" means, that the PIN must not contain numbers or special characters
+
+    :param pin: The PIN to check
+    :param policy: The policy that describes the allowed contents of the PIN.
+    :return: Tuple of True or False and a description
+    """
+    chars = {"c": "[a-zA-Z]",
+             "n": "[0-9]",
+             "s": "[.:,;_<>+*!/()=?$§%&#~\^-]"}
+    exclusion = False
+    grouping = False
+    ret = True
+    comment = []
+
+    if not policy:
+        return False, "No policy given."
+
+    if policy[0] == "+":
+        # grouping
+        necessary = []
+        for char in policy[1:]:
+            necessary.append(chars.get(char))
+        necessary = "|".join(necessary)
+        if not re.search(necessary, pin):
+            ret = False
+            comment.append("Missing character in PIN: {0!s}".format(necessary))
+
+    elif policy[0] == "-":
+        # exclusion
+        not_allowed = []
+        for char in policy[1:]:
+            not_allowed.append(chars.get(char))
+        not_allowed = "|".join(not_allowed)
+        if re.search(not_allowed, pin):
+            ret = False
+            comment.append("Not allowed character in PIN!")
+
+    else:
+        for c in chars:
+            if c in policy and not re.search(chars[c], pin):
+                ret = False
+                comment.append("Missing character in PIN: {0!s}".format(chars[c]))
+
+    return ret, ",".join(comment)

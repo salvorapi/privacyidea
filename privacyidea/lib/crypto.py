@@ -37,6 +37,7 @@ Security module functions are contained under lib/security/
 
 This lib.cryto is tested in tests/test_lib_crypto.py
 """
+from __future__ import division
 import hmac
 import logging
 from hashlib import sha256
@@ -46,7 +47,6 @@ from .log import log_with
 from .error import HSMException
 import binascii
 import ctypes
-from flask import current_app
 from Crypto.Hash import SHA as SHA1
 from Crypto.Hash import SHA256 as HashFunc
 from Crypto.Cipher import AES
@@ -62,7 +62,10 @@ except ImportError:
 import passlib.hash
 import sys
 import traceback
-
+from six import PY2, text_type
+from privacyidea.lib.framework import get_app_local_store, get_app_config_value, get_app_config
+if not PY2:
+    long = int
 
 FAILED_TO_DECRYPT_PASSWORD = "FAILED TO DECRYPT PASSWORD!"
 
@@ -270,7 +273,7 @@ def hash_with_pepper(password, rounds=10023, salt_size=10):
 
     :return: Hash string
     """
-    key = current_app.config.get("PI_PEPPER", "missing")
+    key = get_app_config_value("PI_PEPPER", "missing")
     pw_dig = passlib.hash.pbkdf2_sha512.encrypt(key + password, rounds=rounds,
                                                 salt_size=salt_size)
     return pw_dig
@@ -278,14 +281,15 @@ def hash_with_pepper(password, rounds=10023, salt_size=10):
 
 def verify_with_pepper(passwordhash, password):
     # get the password pepper
-    key = current_app.config.get("PI_PEPPER", "missing")
+    password = password or ""
+    key = get_app_config_value("PI_PEPPER", "missing")
     success = passlib.hash.pbkdf2_sha512.verify(key + password, passwordhash)
     return success
 
 
 def init_hsm():
     """
-    Initialize the HSM in the current_app config
+    Initialize the HSM in the app-local store
 
     The config file pi.cfg may contain PI_HSM_MODULE and parameters like:
     PI_HSM_MODULE_MODULE
@@ -293,55 +297,47 @@ def init_hsm():
 
     :return: hsm object
     """
-    config = current_app.config
-    if "pi_hsm" not in config or not isinstance(config["pi_hsm"], dict):
-        hsm_module_name = config.get("PI_HSM_MODULE",
-                                     "privacyidea.lib.security.default.DefaultSecurityModule")
-        module_parts = hsm_module_name.split(".")
-        package_name = ".".join(module_parts[:-1])
-        class_name = module_parts[-1]
-        mod = __import__(package_name, globals(), locals(), [class_name])
-        hsm_class = getattr(mod, class_name)
-        log.info("initializing HSM class: {0!s}".format(hsm_class))
-        if not hasattr(hsm_class, "setup_module"):  # pragma: no cover
-            raise NameError("Security Module AttributeError: " + package_name + "." +
-                            class_name+ " instance has no attribute 'setup_module'")
-
-        hsm_parameters = {}
-        if class_name == "DefaultSecurityModule":
-            hsm_parameters = {"file": config.get("PI_ENCFILE")}
-        else:
-            # get all parameters by splitting every config entry starting with PI_HSM_MODULE_
-            # and pass this as a config object to hsm_class.
-            hsm_parameters = {}
-            for key in config.keys():
-                if key.startswith("PI_HSM_MODULE_"):
-                    param = key[len("PI_HSM_MODULE_"):].lower()
-                    hsm_parameters[param] = config.get(key)
-            logging_params = dict(hsm_parameters)
-            if "password" in logging_params:
-                logging_params["password"] = "XXXX"
-            log.info("calling HSM module with parameters {0}".format(logging_params))
-
-        HSM_config = {"obj": hsm_class(hsm_parameters)}
-        current_app.config["pi_hsm"] = HSM_config
+    app_store = get_app_local_store()
+    if "pi_hsm" not in app_store or not isinstance(app_store["pi_hsm"], dict):
+        config = get_app_config()
+        HSM_config = {"obj": create_hsm_object(config)}
+        app_store["pi_hsm"] = HSM_config
         log.info("Initialized HSM object {0}".format(HSM_config))
-    hsm = current_app.config.get("pi_hsm").get('obj')
-    return hsm
+    return app_store["pi_hsm"]["obj"]
 
 
-def _get_hsm():
+def get_hsm(require_ready=True):
+    """
+    Check that the HSM has been set up properly and return it.
+    If it is None, raise a HSMException.
+    If it is not ready, raise a HSMException. Optionally, the ready check can be disabled.
+    :param require_ready: Check whether the HSM is ready
+    :return: a HSM module object
+    """
     hsm = init_hsm()
-    if hsm is None or not hsm.is_ready:  # pragma: no cover
+    if hsm is None:
+        raise HSMException('hsm is None!')
+    if require_ready and not hsm.is_ready:
         raise HSMException('hsm not ready!')
-
     return hsm
+
+
+def set_hsm_password(password):
+    """
+    Set the password for the HSM. Raises an exception if the HSM is already set up.
+    :param password: password string
+    :return: boolean flag indicating whether the HSM is ready now
+    """
+    hsm = init_hsm()
+    if hsm.is_ready:
+        raise HSMException("HSM already set up.")
+    return hsm.setup_module({"password": password})
 
 
 @log_with(log, log_entry=False)
 def encryptPassword(password):
     from privacyidea.lib.utils import to_utf8
-    hsm = _get_hsm()
+    hsm = get_hsm()
     try:
         ret = hsm.encrypt_password(to_utf8(password))
     except Exception as exx:  # pragma: no cover
@@ -352,25 +348,48 @@ def encryptPassword(password):
 
 @log_with(log, log_entry=False)
 def encryptPin(cryptPin):
-    hsm = _get_hsm()
+    hsm = get_hsm()
     ret = hsm.encrypt_pin(cryptPin)
     return ret
 
 
 @log_with(log, log_exit=False)
-def decryptPassword(cryptPass):
-    hsm = _get_hsm()
+def decryptPassword(cryptPass, convert_unicode=False):
+    """
+    Decrypt the encrypted password ``cryptPass`` and return it.
+    If an error occurs during decryption, return FAILED_TO_DECRYPT_PASSWORD.
+
+    :param cryptPass: bytestring
+    :param convert_unicode: If true, interpret the decrypted password as an UTF-8 string
+                            and convert it to unicode. If an error occurs here,
+                            the original bytestring is returned.
+    """
+    # NOTE: Why do we have the ``convert_unicode`` parameter?
+    # Up until now, this always returned bytestrings. However, this breaks
+    # LDAP and SQL resolvers, which expect this to return an unicode string
+    # (and this makes more sense, because ``encryptPassword`` also
+    # takes unicode strings!). But always returning unicode might break
+    # other call sites of ``decryptPassword``. So we add the
+    # keyword argument to avoid breaking compatibility.
+    from privacyidea.lib.utils import to_unicode
+    hsm = get_hsm()
     try:
         ret = hsm.decrypt_password(cryptPass)
     except Exception as exx:  # pragma: no cover
         log.warning(exx)
         ret = FAILED_TO_DECRYPT_PASSWORD
+    try:
+        if convert_unicode:
+            ret = to_unicode(ret)
+    except Exception as exx:  # pragma: no cover
+        log.warning(exx)
+        # just keep ``ret`` as a bytestring in that case
     return ret
 
 
 @log_with(log, log_exit=False)
 def decryptPin(cryptPin):
-    hsm = _get_hsm()
+    hsm = get_hsm()
     ret = hsm.decrypt_pin(cryptPin)
     return ret
 
@@ -390,7 +409,7 @@ def encrypt(data, iv, id=0):
 
 
     '''
-    hsm = _get_hsm()
+    hsm = get_hsm()
     ret = hsm.encrypt(data, iv, id)
     return ret
 
@@ -409,7 +428,7 @@ def decrypt(input, iv, id=0):
     :return:      decryted buffer
 
     '''
-    hsm = _get_hsm()
+    hsm = get_hsm()
     ret = hsm.decrypt(input, iv, id)
     return ret
 
@@ -494,12 +513,14 @@ def geturandom(length=20, hex=False):
     get random - from the security module
 
     :param length: length of the returned bytes - default is 20 bytes
-    :rtype length: int
+    :type length: int
+    :param hex: convert result to hexstring
+    :type hex: bool
 
     :return: buffer of bytes
 
     '''
-    hsm = _get_hsm()
+    hsm = get_hsm()
     ret = hsm.random(length)
         
     if hex:
@@ -521,10 +542,10 @@ class urandom(object):
         :return: float value
         """
         # get a binary random string
-        randbin = geturandom(urandom.precision)
+        randhex = geturandom(urandom.precision, hex=True)
 
         # convert this to an integer
-        randi = int(randbin.encode('hex'), 16) * 1.0
+        randi = int(randhex, 16) * 1.0
 
         # get the max integer
         intmax = 2 ** (8 * urandom.precision) * 1.0
@@ -632,8 +653,8 @@ def get_rand_digit_str(length=16):
     if length == 1:
         raise ValueError("get_rand_digit_str only works for values > 1")
     clen = int(length / 2.4 + 0.5)
-    randd = geturandom(clen)
-    s = "{0:d}".format((int(randd.encode('hex'), 16)))
+    randd = geturandom(clen, hex=True)
+    s = "{0:d}".format((int(randd, 16)))
     if len(s) < length:
         s = "0" * (length - len(s)) + s
     elif len(s) > length:
@@ -650,8 +671,7 @@ def get_alphanum_str(length=16):
     """
     ret = ""
     for i in range(length):
-        ret += random.choice(string.lowercase + string.uppercase +
-                             string.digits)
+        ret += random.choice(string.ascii_letters + string.digits)
     return ret
 
 
@@ -708,9 +728,13 @@ class Sign(object):
         """
         Create a signature of the string s
 
+        :param s: String to sign
+        :type s: str
         :return: The signature of the string
         :rtype: long
         """
+        if isinstance(s, text_type):
+            s = s.encode('utf8')
         RSAkey = RSA.importKey(self.private)
         if SIGN_WITH_RSA:
             hashvalue = HashFunc.new(s).digest()
@@ -724,7 +748,14 @@ class Sign(object):
     def verify(self, s, signature):
         """
         Check the signature of the string s
+
+        :param s: String to check
+        :type s: str
+        :param signature: the signature to compare
+        :type signature: str
         """
+        if isinstance(s, text_type):
+            s = s.encode('utf8')
         r = False
         try:
             RSAkey = RSA.importKey(self.public)
@@ -735,7 +766,49 @@ class Sign(object):
             else:
                 hashvalue = HashFunc.new(s)
                 pkcs1_15.new(RSAkey).verify(hashvalue, signature)
-        except Exception:  # pragma: no cover
+        except Exception as _e:  # pragma: no cover
             log.error("Failed to verify signature: {0!r}".format(s))
             log.debug("{0!s}".format(traceback.format_exc()))
         return r
+
+
+def create_hsm_object(config):
+    """
+    This creates an HSM object from the given config dictionary.
+    The config dictionary are the values that appear in pi.cfg.
+
+    It is needed PI_HSM_MODULE and all other values
+    PI_HSM_MODULE_* depending on the module implementation.
+
+    :param config: A configuration dictionary
+    :return: A HSM object
+    """
+    hsm_module_name = config.get("PI_HSM_MODULE",
+                                 "privacyidea.lib.security.default.DefaultSecurityModule")
+    module_parts = hsm_module_name.split(".")
+    package_name = ".".join(module_parts[:-1])
+    class_name = module_parts[-1]
+    mod = __import__(package_name, globals(), locals(), [class_name])
+    hsm_class = getattr(mod, class_name)
+    log.info("initializing HSM class: {0!s}".format(hsm_class))
+    if not hasattr(hsm_class, "setup_module"):  # pragma: no cover
+        raise NameError("Security Module AttributeError: " + package_name + "." +
+                        class_name + " instance has no attribute 'setup_module'")
+
+    hsm_parameters = {}
+    if class_name == "DefaultSecurityModule":
+        hsm_parameters = {"file": config.get("PI_ENCFILE")}
+    else:
+        # get all parameters by splitting every config entry starting with PI_HSM_MODULE_
+        # and pass this as a config object to hsm_class.
+        hsm_parameters = {}
+        for key in config.keys():
+            if key.startswith("PI_HSM_MODULE_"):
+                param = key[len("PI_HSM_MODULE_"):].lower()
+                hsm_parameters[param] = config.get(key)
+        logging_params = dict(hsm_parameters)
+        if "password" in logging_params:
+            logging_params["password"] = "XXXX"
+        log.info("calling HSM module with parameters {0}".format(logging_params))
+
+    return hsm_class(hsm_parameters)

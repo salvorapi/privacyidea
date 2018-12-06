@@ -10,11 +10,12 @@ The lib.resolver.py only depends on the database model.
 """
 PWFILE = "tests/testdata/passwords"
 from .base import MyTestCase
-import ldap3mock
+from . import ldap3mock
 from ldap3.core.exceptions import LDAPOperationResult
 from ldap3.core.results import RESULT_SIZE_LIMIT_EXCEEDED
 import mock
 import responses
+import datetime
 import uuid
 from privacyidea.lib.resolvers.LDAPIdResolver import IdResolver as LDAPResolver
 from privacyidea.lib.resolvers.SQLIdResolver import IdResolver as SQLResolver
@@ -28,7 +29,9 @@ from privacyidea.lib.resolver import (save_resolver,
                                       get_resolver_config,
                                       get_resolver_list,
                                       get_resolver_object, pretestresolver)
+from privacyidea.lib.realm import (set_realm, delete_realm)
 from privacyidea.models import ResolverConfig
+
 
 objectGUIDs = [
     '039b36ef-e7c0-42f3-9bf9-ca6a6c0d4d31',
@@ -102,7 +105,13 @@ LDAPDirectory_small = [{"dn": 'cn=bob,ou=example,o=test',
                                 'userPassword': 'ldaptest',
                                 "accountExpires": 9223372036854775807,
                                 "objectGUID": objectGUIDs[1],
-                                'oid': "1"}}
+                                'oid': "1"}},
+                       {"dn": 'cn=salesman,ou=example,o=test',
+                        "attributes": {'cn': 'salesman',
+                                       'givenName': 'hans',
+                                       'sn': 'Meyer',
+                                       'mobile': ['1234', '3456'],
+                                       'objectGUID': objectGUIDs[2]}}
                        ]
 # Same as above, but with curly-braced string representation of objectGUID
 # to imitate ldap3 > 2.4.1
@@ -129,10 +138,12 @@ LDAPDirectory_curly_objectGUID = [{"dn": 'cn=bob,ou=example,o=test',
                                 'oid': "1"}}
                        ]
 
+
 class SQLResolverTestCase(MyTestCase):
     """
     Test the SQL Resolver
     """
+    num_users = 11
     parameters = {'Driver': 'sqlite',
                   'Server': '/tests/testdata/',
                   'Database': "testuser.sqlite",
@@ -164,14 +175,14 @@ class SQLResolverTestCase(MyTestCase):
         y.loadConfig(self.parameters)
 
         userlist = y.getUserList()
-        self.assertTrue(len(userlist) == 9, len(userlist))
+        self.assertTrue(len(userlist) == self.num_users, len(userlist))
 
         user = "cornelius"
         user_id = y.getUserId(user)
         self.assertTrue(user_id == 3, user_id)
 
         rid = y.getResolverId()
-        self.assertTrue(rid == "sql.testuser.sqlite", rid)
+        self.assertTrue(rid.startswith("sql."))
 
         rtype = y.getResolverType()
         self.assertTrue(rtype == "sqlresolver", rtype)
@@ -193,28 +204,32 @@ class SQLResolverTestCase(MyTestCase):
 
     def test_01_where_tests(self):
         y = SQLResolver()
-        y.loadConfig(dict(self.parameters.items() + {"Where": "givenname == "
-                                                              "hans"}.items()))
+        d = self.parameters.copy()
+        d.update({"Where": "givenname == hans"})
+        y.loadConfig(d)
         userlist = y.getUserList()
         self.assertTrue(len(userlist) == 1, userlist)
 
         y = SQLResolver()
-        y.loadConfig(dict(self.parameters.items() + {"Where": "givenname like "
-                                                              "hans"}.items()))
+        d = self.parameters.copy()
+        d.update({"Where": "givenname like hans"})
+        y.loadConfig(d)
         userlist = y.getUserList()
-        self.assertTrue(len(userlist) == 1, userlist)
+        self.assertEqual(len(userlist), 1)
 
         y = SQLResolver()
-        y.loadConfig(
-            dict(self.parameters.items() + {"Where": "id > 2"}.items()))
+        d = self.parameters.copy()
+        d.update({"Where": "id > 2"})
+        y.loadConfig(d)
         userlist = y.getUserList()
-        self.assertTrue(len(userlist) == 7, userlist)
+        self.assertEqual(len(userlist), self.num_users - 2)
 
         y = SQLResolver()
-        y.loadConfig(dict(self.parameters.items() + {"Where": "id < "
-                                                              "5"}.items()))
+        d = self.parameters.copy()
+        d.update({"Where": "id < 5"})
+        y.loadConfig(d)
         userlist = y.getUserList()
-        self.assertTrue(len(userlist) == 4, userlist)
+        self.assertEqual(len(userlist), 4)
 
     def test_02_check_passwords(self):
         y = SQLResolver()
@@ -224,7 +239,6 @@ class SQLResolverTestCase(MyTestCase):
         # 772cb52221f19104310cd2f549f5131fbfd34e0f4de7590c87b1d73175812607
 
         result = y.checkPass(3, "dunno")
-        print(result)
         assert result is True
         '''
         SHA1 base64 encoded of "dunno"
@@ -256,11 +270,17 @@ class SQLResolverTestCase(MyTestCase):
         result = y.checkPass(9, "dunno")
         self.assertTrue(result)
 
+        # bcrypt hashes
+        self.assertTrue(y.checkPass(10, "test"))
+        self.assertFalse(y.checkPass(10, "testw"))
+        self.assertTrue(y.checkPass(11, "test"))
+        self.assertFalse(y.checkPass(11, "testw"))
+
     def test_03_testconnection(self):
         y = SQLResolver()
         result = y.testconnection(self.parameters)
-        self.assertEqual(result[0], 9)
-        self.assertTrue('Found 9 users.' in result[1])
+        self.assertEqual(result[0], self.num_users)
+        self.assertTrue('Found {0!s} users.'.format(self.num_users) in result[1])
 
     def test_05_add_user_update_delete(self):
         y = SQLResolver()
@@ -299,38 +319,39 @@ class SQLResolverTestCase(MyTestCase):
         
     def test_06_append_where_filter(self):
         y = SQLResolver()
-        y.loadConfig(dict(self.parameters.items() + {"Where": "givenname == "
-                                                              "hans and name "
-                                                              "== dampf"}.items()))
+        d = self.parameters.copy()
+        d.update({"Where": "givenname == hans and name == dampf"})
+        y.loadConfig(d)
         userlist = y.getUserList()
         self.assertTrue(len(userlist) == 1, userlist)
         
         y = SQLResolver()
-        y.loadConfig(dict(self.parameters.items() + {"Where": "givenname == "
-                                                              "hans AND name "
-                                                              "== dampf"}.items()))
+        d = self.parameters.copy()
+        d.update({"Where": "givenname == hans AND name == dampf"})
+        y.loadConfig(d)
         userlist = y.getUserList()
         self.assertTrue(len(userlist) == 1, userlist)
 
         # Also allow more than one blank surrounding the "and"
         # SQLAlchemy strips the blanks in the condition
         y = SQLResolver()
-        y.loadConfig(dict(self.parameters.items() + {"Where": "givenname == "
-                                                              "hans   AND name "
-                                                              "== dampf"}.items()))
+        d = self.parameters.copy()
+        d.update({"Where": "givenname == hans   AND name == dampf"})
+        y.loadConfig(d)
         userlist = y.getUserList()
         self.assertTrue(len(userlist) == 1, userlist)
         
         y = SQLResolver()
-        y.loadConfig(dict(self.parameters.items() + {"Where": "givenname == "
-                                                              "hans and name "
-                                                              "== test"}.items()))
+        d = self.parameters.copy()
+        d.update({"Where": "givenname == hans and name == test"})
+        y.loadConfig(d)
         userlist = y.getUserList()
         self.assertTrue(len(userlist) == 0, userlist)
         
         y = SQLResolver()
-        y.loadConfig(dict(self.parameters.items() + {"Where": "givenname == "
-                                                              "chandler"}.items()))
+        d = self.parameters.copy()
+        d.update({"Where": "givenname == chandler"})
+        y.loadConfig(d)
         userlist = y.getUserList()
         self.assertTrue(len(userlist) == 0, userlist)
 
@@ -392,6 +413,38 @@ class SQLResolverTestCase(MyTestCase):
         self.assertTrue(stored_password.startswith("{SSHA512}"), stored_password)
 
         y.delete_user(uid)
+
+    def test_08_resolver_id(self):
+        y = SQLResolver()
+        y.loadConfig(self.parameters)
+        rid1 = y.getResolverId()
+
+        y = SQLResolver()
+        param2 = self.parameters.copy()
+        param2["Where"] = "1 = 1"
+        y.loadConfig(param2)
+        rid2 = y.getResolverId()
+
+        # rid1 == rid2, because only the WHERE clause has changed, which does not have any effect on the resolver id!
+        self.assertEqual(rid1, rid2)
+
+        y = SQLResolver()
+        param3 = self.parameters.copy()
+        param3["Server"] = '/tests/../tests/testdata/'
+        y.loadConfig(param3)
+        rid3 = y.getResolverId()
+
+        # rid1 != rid3, because the connect string has changed
+        self.assertNotEqual(rid1, rid3)
+
+        y = SQLResolver()
+        param4 = self.parameters.copy()
+        param4["poolSize"] = "42"
+        y.loadConfig(param4)
+        rid4 = y.getResolverId()
+
+        # rid1 != rid4, because the pool size has changed
+        self.assertNotEqual(rid1, rid4)
 
     def test_99_testconnection_fail(self):
         y = SQLResolver()
@@ -668,7 +721,7 @@ class LDAPResolverTestCase(MyTestCase):
         self.assertTrue(user_id == "cn=bob,ou=example,o=test", user_id)
 
         rid = y.getResolverId()
-        self.assertTrue(rid == "d6ce19abbc3c23e24e1cefa41cbe6f9f118613b9", rid)
+        self.assertTrue(rid == "035fbc6272907bc79a2c036b5bf9665ca921d558", rid)
 
         rtype = y.getResolverType()
         self.assertTrue(rtype == "ldapresolver", rtype)
@@ -736,7 +789,7 @@ class LDAPResolverTestCase(MyTestCase):
         self.assertEqual("cn=bob,ou=example,o=test", user_id)
 
         rid = y.getResolverId()
-        self.assertEqual('8372b96a28ff8b4710f4aba838d5f9891ad4e381', rid)
+        self.assertEqual('2a92363e3f9da66321d9ff71b3cd0c464e990b02', rid)
 
         rtype = y.getResolverType()
         self.assertTrue(rtype == "ldapresolver", rtype)
@@ -803,7 +856,7 @@ class LDAPResolverTestCase(MyTestCase):
         self.assertEqual(len(result), len(LDAPDirectory))
 
         rid = y.getResolverId()
-        self.assertTrue(rid == "d6ce19abbc3c23e24e1cefa41cbe6f9f118613b9", rid)
+        self.assertTrue(rid == "035fbc6272907bc79a2c036b5bf9665ca921d558", rid)
 
         rtype = y.getResolverType()
         self.assertTrue(rtype == "ldapresolver", rtype)
@@ -845,7 +898,7 @@ class LDAPResolverTestCase(MyTestCase):
         self.assertTrue(user_id == "3", "{0!s}".format(user_id))
 
         rid = y.getResolverId()
-        self.assertTrue(rid == "d6ce19abbc3c23e24e1cefa41cbe6f9f118613b9", rid)
+        self.assertTrue(rid == "035fbc6272907bc79a2c036b5bf9665ca921d558", rid)
 
         rtype = y.getResolverType()
         self.assertTrue(rtype == "ldapresolver", rtype)
@@ -1484,7 +1537,7 @@ class LDAPResolverTestCase(MyTestCase):
         self.assertEqual(user_id, "cn=kölbel,ou=example,o=test")
 
         rid = y.getResolverId()
-        self.assertTrue(rid == "d6ce19abbc3c23e24e1cefa41cbe6f9f118613b9", rid)
+        self.assertTrue(rid == "035fbc6272907bc79a2c036b5bf9665ca921d558", rid)
 
         rtype = y.getResolverType()
         self.assertTrue(rtype == "ldapresolver", rtype)
@@ -1538,7 +1591,7 @@ class LDAPResolverTestCase(MyTestCase):
         self.assertEqual(user_id, "cn=kölbel,ou=example,o=test")
 
         rid = y.getResolverId()
-        self.assertTrue(rid == "d6ce19abbc3c23e24e1cefa41cbe6f9f118613b9", rid)
+        self.assertTrue(rid == "035fbc6272907bc79a2c036b5bf9665ca921d558", rid)
 
         rtype = y.getResolverType()
         self.assertTrue(rtype == "ldapresolver", rtype)
@@ -1780,6 +1833,99 @@ class LDAPResolverTestCase(MyTestCase):
         info = y.getUserInfo(uid)
         self.assertEqual(info['username'], objectGUIDs[0])
 
+    @ldap3mock.activate
+    def test_32_cache_expiration(self):
+        # This test checks if the short-living cache deletes expired
+        # entries. NOTE: This does not test a multi-threaded scenario!
+        ldap3mock.setLDAPDirectory(LDAPDirectory_small)
+        cache_timeout = 120
+        y = LDAPResolver()
+        y.loadConfig({'LDAPURI': 'ldap://localhost',
+                      'LDAPBASE': 'o=test',
+                      'BINDDN': 'cn=manager,ou=example,o=test',
+                      'BINDPW': 'ldaptest',
+                      'LOGINNAMEATTRIBUTE': 'cn',
+                      'LDAPSEARCHFILTER': '(&(cn=*))', # we use this weird search filter to get a unique resolver ID
+                      'USERINFO': '{ "username": "cn",'
+                                  '"phone" : "telephoneNumber", '
+                                  '"mobile" : "mobile"'
+                                  ', "email" : "mail", '
+                                  '"surname" : "sn", '
+                                  '"givenname" : "givenName" }',
+                      'UIDTYPE': 'objectGUID',
+                      'NOREFERRALS': True,
+                      'CACHE_TIMEOUT': cache_timeout
+                      })
+        from privacyidea.lib.resolvers.LDAPIdResolver import CACHE
+        # assert that the other tests haven't left anything in the cache
+        self.assertNotIn(y.getResolverId(), CACHE)
+        bob_id = y.getUserId('bob')
+        # assert the cache contains this entry
+        self.assertEqual(CACHE[y.getResolverId()]['getUserId']['bob']['value'], bob_id)
+        # assert subsequent requests for the same data hit the cache
+        with mock.patch.object(ldap3mock.Connection, 'search') as mock_search:
+            bob_id2 = y.getUserId('bob')
+            self.assertEqual(bob_id, bob_id2)
+            mock_search.assert_not_called()
+        self.assertIn('bob', CACHE[y.getResolverId()]['getUserId'])
+        # assert requests later than CACHE_TIMEOUT seconds query the directory again
+        now = datetime.datetime.now()
+        with mock.patch('privacyidea.lib.resolvers.LDAPIdResolver.datetime.datetime',
+                        wraps=datetime.datetime) as mock_datetime:
+            # we now live CACHE_TIMEOUT + 2 seconds in the future
+            mock_datetime.now.return_value = now + datetime.timedelta(seconds=cache_timeout + 2)
+            with mock.patch.object(ldap3mock.Connection, 'search', wraps=y.l.search) as mock_search:
+                bob_id3 = y.getUserId('bob')
+                self.assertEqual(bob_id, bob_id3)
+                mock_search.assert_called_once()
+        # assert the cache contains this entry, with the updated timestamp
+        self.assertEqual(CACHE[y.getResolverId()]['getUserId']['bob'],
+                         {'value': bob_id,
+                          'timestamp': now + datetime.timedelta(seconds=cache_timeout + 2)})
+        # we now go 2 * (CACHE_TIMEOUT + 2) seconds to the future and query for someone else's user ID.
+        # This will cause bob's cache entry to be evicted.
+        with mock.patch('privacyidea.lib.resolvers.LDAPIdResolver.datetime.datetime',
+                        wraps=datetime.datetime) as mock_datetime:
+            mock_datetime.now.return_value = now + datetime.timedelta(seconds=2 * (cache_timeout + 2))
+            manager_id = y.getUserId('manager')
+        self.assertEqual(CACHE[y.getResolverId()]['getUserId'].keys(), ['manager'])
+
+    @ldap3mock.activate
+    def test_33_cache_disabled(self):
+        # This test checks if the short-living cache deletes expired
+        # entries. NOTE: This does not test a multi-threaded scenario!
+        ldap3mock.setLDAPDirectory(LDAPDirectory_small)
+        y = LDAPResolver()
+        y.loadConfig({'LDAPURI': 'ldap://localhost',
+                      'LDAPBASE': 'o=test',
+                      'BINDDN': 'cn=manager,ou=example,o=test',
+                      'BINDPW': 'ldaptest',
+                      'LOGINNAMEATTRIBUTE': 'cn',
+                      'LDAPSEARCHFILTER': '(|(cn=*))', # we use this weird search filter to get a unique resolver ID
+                      'USERINFO': '{ "username": "cn",'
+                                  '"phone" : "telephoneNumber", '
+                                  '"mobile" : "mobile"'
+                                  ', "email" : "mail", '
+                                  '"surname" : "sn", '
+                                  '"givenname" : "givenName" }',
+                      'UIDTYPE': 'objectGUID',
+                      'NOREFERRALS': True,
+                      'CACHE_TIMEOUT': 0
+                      })
+        from privacyidea.lib.resolvers.LDAPIdResolver import CACHE
+        # assert that the other tests haven't left anything in the cache
+        self.assertNotIn(y.getResolverId(), CACHE)
+        bob_id = y.getUserId('bob')
+        # assert the cache does not contain this entry
+        self.assertNotIn(y.getResolverId(), CACHE)
+        # assert subsequent requests query the directory
+        with mock.patch.object(ldap3mock.Connection, 'search', wraps=y.l.search) as mock_search:
+            bob_id2 = y.getUserId('bob')
+            self.assertEqual(bob_id, bob_id2)
+            mock_search.assert_called_once()
+
+
+
 class BaseResolverTestCase(MyTestCase):
 
     def test_00_basefunctions(self):
@@ -1882,6 +2028,9 @@ class ResolverTestCase(MyTestCase):
 
         reso_list = get_resolver_list(editable=True)
         self.assertTrue(len(reso_list) == 0)
+
+        reso_list = get_resolver_list(filter_resolver_type="passwdresolver")
+        self.assertTrue(len(reso_list) == 2)
 
     def test_03_get_resolver_config(self):
         reso_config = get_resolver_config(self.resolvername2)

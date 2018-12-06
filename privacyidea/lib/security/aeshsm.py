@@ -24,6 +24,8 @@ import binascii
 import logging
 from privacyidea.lib.security.default import SecurityModule
 from privacyidea.lib.error import HSMException
+from privacyidea.lib.crypto import get_alphanum_str
+from six import int2byte
 
 __doc__ = """
 This is a PKCS11 Security module that encrypts and decrypts the data on a
@@ -52,7 +54,7 @@ except ImportError:
 
 
 def int_list_to_bytestring(int_list):  # pragma: no cover
-    return "".join([chr(i) for i in int_list])
+    return b"".join([int2byte(i) for i in int_list])
 
 
 class AESHardwareSecurityModule(SecurityModule):  # pragma: no cover
@@ -97,11 +99,11 @@ class AESHardwareSecurityModule(SecurityModule):  # pragma: no cover
         log.debug("Setting a password: {0!s}".format(bool(self.password)))
         self.module = config.get("module")
         log.debug("Setting the modules: {0!s}".format(self.module))
+        self.max_retries = config.get("max_retries", MAX_RETRIES)
+        log.debug("Setting max retries: {0!s}".format(self.max_retries))
         self.session = None
         self.key_handles = {}
 
-        self.pkcs11 = PyKCS11.PyKCS11Lib()
-        self.pkcs11.load(self.module)
         self.initialize_hsm()
 
     def initialize_hsm(self):
@@ -112,6 +114,8 @@ class AESHardwareSecurityModule(SecurityModule):  # pragma: no cover
         * get session
         :return:
         """
+        self.pkcs11 = PyKCS11.PyKCS11Lib()
+        self.pkcs11.load(self.module)
         self.pkcs11.lib.C_Initialize()
         if self.password:
             self._login()
@@ -158,7 +162,8 @@ class AESHardwareSecurityModule(SecurityModule):  # pragma: no cover
             objs = self.session.findObjects([(PyKCS11.CKA_CLASS, PyKCS11.CKO_SECRET_KEY),
                                              (PyKCS11.CKA_LABEL, label)])
             log.debug("Loading '{}' key with label '{}'".format(k, label))
-            self.key_handles[mapping[k]] = objs[0]
+            if objs != []:
+                self.key_handles[mapping[k]] = objs[0]
 
         # self.session.logout()
         log.debug("Successfully setup the security module.")
@@ -168,7 +173,7 @@ class AESHardwareSecurityModule(SecurityModule):  # pragma: no cover
         """
         Return a random bytestring
         :param length: length of the random bytestring
-        :return:
+        :rtype bytes
         """
         retries = 0
         while True:
@@ -177,50 +182,64 @@ class AESHardwareSecurityModule(SecurityModule):  # pragma: no cover
                 break
             except PyKCS11.PyKCS11Error as exx:
                 log.warning(u"Generate Random failed: {0!s}".format(exx))
+                # If something goes wrong in this process, we free memory, session and handles
+                self.pkcs11.lib.C_Finalize()
                 self.initialize_hsm()
                 retries += 1
-                if retries > MAX_RETRIES:
+                if retries > self.max_retries:
                     raise HSMException("Failed to generate random number after multiple retries.")
 
         # convert the array of the random integers to a string
         return int_list_to_bytestring(r_integers)
 
     def encrypt(self, data, iv, key_id=TOKEN_KEY):
+        """
+
+        :rtype: bytes
+        """
         if len(data) == 0:
             return bytes("")
         log.debug("Encrypting {} bytes with key {}".format(len(data), key_id))
         m = PyKCS11.Mechanism(PyKCS11.CKM_AES_CBC_PAD, iv)
-        k = self.key_handles[key_id]
         retries = 0
         while True:
             try:
+                k = self.key_handles[key_id]
                 r = self.session.encrypt(k, bytes(data), m)
                 break
             except PyKCS11.PyKCS11Error as exx:
                 log.warning(u"Encryption failed: {0!s}".format(exx))
+                # If something goes wrong in this process, we free memory,session and handles
+                self.pkcs11.lib.C_Finalize()
                 self.initialize_hsm()
                 retries += 1
-                if retries > MAX_RETRIES:
+                if retries > self.max_retries:
                     raise HSMException("Failed to encrypt after multiple retries.")
 
         return int_list_to_bytestring(r)
 
     def decrypt(self, data, iv, key_id=TOKEN_KEY):
+        """
+
+        :rtype bytes
+        """
         if len(data) == 0:
             return bytes("")
         log.debug("Decrypting {} bytes with key {}".format(len(data), key_id))
         m = PyKCS11.Mechanism(PyKCS11.CKM_AES_CBC_PAD, iv)
-        k = self.key_handles[key_id]
         retries = 0
         while True:
             try:
+                k = self.key_handles[key_id]
                 r = self.session.decrypt(k, bytes(data), m)
                 break
             except PyKCS11.PyKCS11Error as exx:
                 log.warning(u"Decryption failed: {0!s}".format(exx))
+                # If something goes wrong in this process, we free memory, session and handlers
+                self.pkcs11.lib.C_Finalize()
                 self.initialize_hsm()
                 retries += 1
-                if retries > MAX_RETRIES:
+                if retries > self.max_retries:
                     raise HSMException("Failed to decrypt after multiple retries.")
 
         return int_list_to_bytestring(r)
@@ -313,6 +332,50 @@ class AESHardwareSecurityModule(SecurityModule):  # pragma: no cover
         (iv, data) = [binascii.unhexlify(x) for x in crypt_value.split(':')]
 
         return self.decrypt(data, iv, key_id)
+
+    def create_keys(self):
+        """
+        Connect to the HSM and create the encryption keys.
+        The HSM connection should already be configured in pi.cfg.
+
+        We will create new keys with new key labels
+        :return: a dictionary of the created key labels
+        """
+        # We need a new read/write session
+        session = self.pkcs11.openSession(self.slot, PyKCS11.CKF_SERIAL_SESSION | PyKCS11.CKF_RW_SESSION)
+        # We need to logout, otherwise we get CKR_USER_ALREADY_LOGGED_IN
+        session.logout()
+        session.login(self.password)
+
+        key_labels = {"token": "",
+                      "config": "",
+                      "value": ""}
+
+        for kl in key_labels.keys():
+            label = "{0!s}_{1!s}".format(kl, get_alphanum_str())
+            aesTemplate = [
+                (PyKCS11.CKA_CLASS, PyKCS11.CKO_SECRET_KEY),
+                (PyKCS11.CKA_KEY_TYPE, PyKCS11.CKK_AES),
+                (PyKCS11.CKA_VALUE_LEN, 32),
+                (PyKCS11.CKA_LABEL, label),
+                (PyKCS11.CKA_ID, label),
+                (PyKCS11.CKA_TOKEN, PyKCS11.CK_TRUE),
+                (PyKCS11.CKA_PRIVATE, True),
+                (PyKCS11.CKA_SENSITIVE, True),
+                (PyKCS11.CKA_ENCRYPT, True),
+                (PyKCS11.CKA_DECRYPT, True),
+                (PyKCS11.CKA_TOKEN, True),
+                (PyKCS11.CKA_WRAP, True),
+                (PyKCS11.CKA_UNWRAP, True),
+                (PyKCS11.CKA_EXTRACTABLE, False)
+            ]
+            aesKey = session.generateKey(aesTemplate)
+            key_labels[kl] = label
+
+        session.logout()
+        session.closeSession()
+
+        return key_labels
 
 
 if __name__ == "__main__":

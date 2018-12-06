@@ -1574,6 +1574,7 @@ class EventHandler(MethodsMixin, db.Model):
     name = db.Column(db.Unicode(64), unique=False, nullable=True)
     active = db.Column(db.Boolean, default=True)
     ordering = db.Column(db.Integer, nullable=False, default=0)
+    position = db.Column(db.Unicode(10), default=u"post")
     # This is the name of the event in the code
     event = db.Column(db.Unicode(255), nullable=False)
     # This is the identifier of an event handler module
@@ -1589,7 +1590,7 @@ class EventHandler(MethodsMixin, db.Model):
 
     def __init__(self, name, event, handlermodule, action, condition="",
                  ordering=0, options=None, id=None, conditions=None,
-                 active=True):
+                 active=True, position="post"):
         self.name = name
         self.ordering = ordering
         self.event = event
@@ -1597,22 +1598,23 @@ class EventHandler(MethodsMixin, db.Model):
         self.condition = condition
         self.action = action
         self.active = active
+        self.position = position
         if id == "":
             id = None
         self.id = id
         self.save()
         # add the options to the event handler
         options = options or {}
-        for k, v in options.iteritems():
+        for k, v in options.items():
             EventHandlerOption(eventhandler_id=self.id, Key=k, Value=v).save()
         conditions = conditions or {}
-        for k, v in conditions.iteritems():
+        for k, v in conditions.items():
             EventHandlerCondition(eventhandler_id=self.id, Key=k, Value=v).save()
         # Delete event handler conditions, that ar not used anymore.
         ev_conditions = EventHandlerCondition.query.filter_by(
             eventhandler_id=self.id).all()
         for cond in ev_conditions:
-            if cond.Key not in conditions.keys():
+            if cond.Key not in conditions:
                 EventHandlerCondition.query.filter_by(
                     eventhandler_id=self.id, Key=cond.Key).delete()
                 db.session.commit()
@@ -1626,6 +1628,7 @@ class EventHandler(MethodsMixin, db.Model):
             # update
             EventHandler.query.filter_by(id=self.id).update({
                 "ordering": self.ordering or 0,
+                "position": self.position or "post",
                 "event": self.event,
                 "active": self.active,
                 "name": self.name,
@@ -1662,6 +1665,7 @@ class EventHandler(MethodsMixin, db.Model):
              "handlermodule": self.handlermodule,
              "id": self.id,
              "ordering": self.ordering,
+             "position": self.position or "post",
              "action": self.action,
              "condition": self.condition}
         event_list = [x.strip() for x in self.event.split(",")]
@@ -1962,7 +1966,7 @@ class SMSGateway(MethodsMixin, db.Model):
                     SMSGatewayOption.query.filter_by(gateway_id=self.id,
                                                      Key=option).delete()
         # add the options to the SMS Gateway
-        for k, v in options.iteritems():
+        for k, v in options.items():
             SMSGatewayOption(gateway_id=self.id, Key=k, Value=v).save()
 
     def save(self):
@@ -2404,7 +2408,8 @@ audit_column_length = {"signature": 620,
                        "privacyidea_server": 255,
                        "client": 50,
                        "loglevel": 12,
-                       "clearance_level": 12}
+                       "clearance_level": 12,
+                       "policies": 255}
 AUDIT_TABLE_NAME = 'pidea_audit'
 
 
@@ -2435,6 +2440,7 @@ class Audit(MethodsMixin, db.Model):
     loglevel = db.Column(db.String(audit_column_length.get("loglevel")))
     clearance_level = db.Column(db.String(audit_column_length.get(
         "clearance_level")))
+    policies = db.Column(db.String(audit_column_length.get("policies")))
 
     def __init__(self,
                  action="",
@@ -2450,7 +2456,8 @@ class Audit(MethodsMixin, db.Model):
                  privacyidea_server="",
                  client="",
                  loglevel="default",
-                 clearance_level="default"
+                 clearance_level="default",
+                 policies=""
                  ):
         self.signature = ""
         self.date = datetime.now()
@@ -2468,6 +2475,7 @@ class Audit(MethodsMixin, db.Model):
         self.client = convert_column_to_unicode(client)
         self.loglevel = convert_column_to_unicode(loglevel)
         self.clearance_level = convert_column_to_unicode(clearance_level)
+        self.policies = convert_column_to_unicode(policies)
 
 
 ### User Cache
@@ -2527,6 +2535,8 @@ class PeriodicTask(MethodsMixin, db.Model):
     interval = db.Column(db.Unicode(256), nullable=False)
     nodes = db.Column(db.Unicode(256), nullable=False)
     taskmodule = db.Column(db.Unicode(256), nullable=False)
+    ordering = db.Column(db.Integer, nullable=False, default=0)
+    last_update = db.Column(db.DateTime(False), nullable=False)
     options = db.relationship('PeriodicTaskOption',
                               lazy='dynamic',
                               backref='periodictask')
@@ -2534,7 +2544,7 @@ class PeriodicTask(MethodsMixin, db.Model):
                                 lazy='dynamic',
                                 backref='periodictask')
 
-    def __init__(self, name, active, interval, node_list, taskmodule, options=None, id=None):
+    def __init__(self, name, active, interval, node_list, taskmodule, ordering, options=None, id=None):
         """
         :param name: Unique name of the periodic task as unicode
         :param active: a boolean
@@ -2543,6 +2553,7 @@ class PeriodicTask(MethodsMixin, db.Model):
                           If we update an existing PeriodicTask entry, PeriodicTaskLastRun entries
                           referring to nodes that are not present in ``node_list`` any more will be deleted.
         :param taskmodule: a unicode
+        :param ordering: an integer. Lower tasks are executed first.
         :param options: a dictionary of options, mapping unicode keys to values. Values will be converted to unicode.
                         If we update an existing PeriodicTask entry, all options that have been set previously
                         but are not present in ``options`` will be deleted.
@@ -2554,10 +2565,11 @@ class PeriodicTask(MethodsMixin, db.Model):
         self.interval = interval
         self.nodes = u", ".join(node_list)
         self.taskmodule = taskmodule
+        self.ordering = ordering
         self.save()
         # add the options to the periodic task
         options = options or {}
-        for k, v in options.iteritems():
+        for k, v in options.items():
             PeriodicTaskOption(periodictask_id=self.id, key=k, value=v)
         # remove all leftover options
         all_options = PeriodicTaskOption.query.filter_by(periodictask_id=self.id).all()
@@ -2570,6 +2582,13 @@ class PeriodicTask(MethodsMixin, db.Model):
             if last_run.node not in node_list:
                 PeriodicTaskLastRun.query.filter_by(id=last_run.id).delete()
         db.session.commit()
+
+    @property
+    def aware_last_update(self):
+        """
+        Return self.last_update with attached UTC tzinfo
+        """
+        return self.last_update.replace(tzinfo=tzutc())
 
     def get(self):
         """
@@ -2584,14 +2603,18 @@ class PeriodicTask(MethodsMixin, db.Model):
                 "interval": self.interval,
                 "nodes": [node.strip() for node in self.nodes.split(",")],
                 "taskmodule": self.taskmodule,
+                "last_update": self.aware_last_update,
+                "ordering": self.ordering,
                 "options": dict((option.key, option.value) for option in self.options),
                 "last_runs": dict((last_run.node, last_run.aware_timestamp) for last_run in self.last_runs)}
 
     def save(self):
         """
         If the entry has an ID set, update the entry. If not, create one.
+        Set ``last_update`` to the current time.
         :return: the entry ID
         """
+        self.last_update = datetime.utcnow()
         if self.id is None:
             # create a new one
             db.session.add(self)
@@ -2603,6 +2626,8 @@ class PeriodicTask(MethodsMixin, db.Model):
                 "interval": self.interval,
                 "nodes": self.nodes,
                 "taskmodule": self.taskmodule,
+                "ordering": self.ordering,
+                "last_update": self.last_update,
             })
         db.session.commit()
         return self.id
@@ -2635,7 +2660,7 @@ class PeriodicTaskOption(db.Model):
     id = db.Column(db.Integer, Sequence("periodictaskopt_seq"),
                    primary_key=True)
     periodictask_id = db.Column(db.Integer, db.ForeignKey('periodictask.id'))
-    key = db.Column(db.Unicode(256), nullable=False)
+    key = db.Column(db.Unicode(255), nullable=False)
     value = db.Column(db.Unicode(2000), default=u'')
 
     __table_args__ = (db.UniqueConstraint('periodictask_id',
@@ -2679,7 +2704,7 @@ class PeriodicTaskLastRun(db.Model):
     id = db.Column(db.Integer, Sequence("periodictasklastrun_seq"),
                    primary_key=True)
     periodictask_id = db.Column(db.Integer, db.ForeignKey('periodictask.id'))
-    node = db.Column(db.Unicode(256), nullable=False)
+    node = db.Column(db.Unicode(255), nullable=False)
     timestamp = db.Column(db.DateTime(False), nullable=False)
 
     __table_args__ = (db.UniqueConstraint('periodictask_id',
@@ -2702,7 +2727,7 @@ class PeriodicTaskLastRun(db.Model):
     @property
     def aware_timestamp(self):
         """
-        Return self.timezone with attached UTC tzinfo
+        Return self.timestamp with attached UTC tzinfo
         """
         return self.timestamp.replace(tzinfo=tzutc())
 

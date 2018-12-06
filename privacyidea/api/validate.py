@@ -75,7 +75,7 @@ from privacyidea.lib.token import (check_user_pass, check_serial_pass,
 from privacyidea.api.lib.utils import get_all_params
 from privacyidea.lib.config import (return_saml_attributes, get_from_config,
                                     return_saml_attributes_on_fail,
-                                    SYSCONF)
+                                    SYSCONF, update_config_object)
 from privacyidea.lib.audit import getAudit
 from privacyidea.api.lib.prepolicy import (prepolicy, set_realm,
                                            api_key_required, mangle,
@@ -89,7 +89,6 @@ from privacyidea.api.lib.postpolicy import (postpolicy,
                                             offline_info,
                                             add_user_detail_to_response, construct_radius_response)
 from privacyidea.lib.policy import PolicyClass
-from privacyidea.lib.config import ConfigClass
 from privacyidea.lib.event import EventConfiguration
 import logging
 from privacyidea.api.lib.postpolicy import postrequest, sign_response
@@ -118,7 +117,7 @@ def before_request():
     """
     This is executed before the request
     """
-    g.config_object = ConfigClass()
+    update_config_object()
     request.all_data = get_all_params(request.values, request.data)
     request.User = get_user_from_param(request.all_data)
     privacyidea_server = current_app.config.get("PI_AUDIT_SERVERNAME") or \
@@ -164,6 +163,7 @@ def after_request(response):
 
 
 @validate_blueprint.route('/offlinerefill', methods=['POST'])
+@check_user_or_serial_in_request(request)
 @event("validate_offlinerefill", request, g)
 def offlinerefill():
     """
@@ -229,6 +229,10 @@ def check():
     Either a ``serial`` or a ``user`` is required to authenticate.
     The PIN and OTP value is sent in the parameter ``pass``.
     In case of successful authentication it returns ``result->value: true``.
+
+    In case of a challenge response authentication a parameter ``exception=1``
+    can be passed. This would result in a HTTP 500 Server Error response if
+    an error occurred during sending of SMS or Email.
 
     In case ``/validate/radiuscheck`` is requested, the responses are
     modified as follows: A successful authentication returns an empty HTTP
@@ -442,7 +446,7 @@ def samlcheck():
                                         "phone": ui.get("phone")
                                         }
             # additional attributes
-            for k, v in ui.iteritems():
+            for k, v in ui.items():
                 result_obj["attributes"][k] = v
 
     g.audit_object.log({"info": details.get("message"),
@@ -536,7 +540,7 @@ def trigger_challenge():
                "clientip": g.client_ip,
                "user": user}
 
-    token_objs = get_tokens(serial=serial, user=user)
+    token_objs = get_tokens(serial=serial, user=user, active=True, revoked=False, locked=False)
     for token_obj in token_objs:
         if "challenge" in token_obj.mode:
             # If this is a challenge response token, we create a challenge

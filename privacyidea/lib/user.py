@@ -131,9 +131,11 @@ class User(object):
         :rtype: bool
         """
         # TODO: Should we add a check for `uid` here?
-        return (self.login == other.login) and (self.resolver ==
-                                                other.resolver) and (
-                self.realm == other.realm)
+        return isinstance(other, type(self)) and (self.login == other.login) and (
+                self.resolver == other.resolver) and (self.realm == other.realm)
+
+    def __hash__(self):
+        return hash((type(self), self.login, self.resolver, self.realm))
 
     def __unicode__(self):
         ret = u"<empty user>"
@@ -156,8 +158,10 @@ class User(object):
             self.login, self.realm, self.resolver))
         return ret
 
-    def __nonzero__(self):
+    def __bool__(self):
         return not self.is_empty()
+
+    __nonzero__ = __bool__
     
     @log_with(log)
     def get_ordererd_resolvers(self):
@@ -278,20 +282,32 @@ class User(object):
         return userInfo
     
     @log_with(log)
-    def get_user_phone(self, phone_type='phone'):
+    def get_user_phone(self, phone_type='phone', index=None):
         """
-        Returns the phone number of a user
+        Returns the phone number or a list of phone numbers of a user.
     
         :param phone_type: The type of the phone, i.e. either mobile or
                            phone (land line)
         :type phone_type: string
+        :param index: The index of the selected phone number of list of the phones of the user.
+            If the index is given, this phone number as string is returned.
+            If the index is omitted, all phone numbers are returned.
     
         :returns: list with phone numbers of this user object
         """
         userinfo = self.info
         if phone_type in userinfo:
-            log.debug("got user phone {0!r} of type {1!r}".format(userinfo[phone_type], phone_type))
-            return userinfo[phone_type]
+            phone = userinfo[phone_type]
+            log.debug("got user phone {0!r} of type {1!r}".format(phone, phone_type))
+            if type(phone) == list and index is not None:
+                if len(phone) > index:
+                    return phone[index]
+                else:
+                    log.warning("userobject ({0!r}) has not that much "
+                                "phone numbers ({1!r} of {2!r}).".format(self, index, phone))
+                    return ""
+            else:
+                return phone
         else:
             log.warning("userobject ({0!r}) has no phone of type {1!r}.".format(self, phone_type))
             return ""
@@ -589,16 +605,18 @@ def get_user_list(param=None, user=None):
     # as delete does not work
     for key in param:
         lval = param[key]
-        if key == "realm":
+        if key in ["realm", "resolver", "user", "username"]:
             continue
-        if key == "resolver":
-            continue
-        if key == "user":
-            # If "user" is in the param we overwrite the username
-            key = "username"
-
         searchDict[key] = lval
         log.debug("Parameter key:{0!r}={1!r}".format(key, lval))
+
+    # update searchdict depending on existence of 'user' or 'username' in param
+    # Since 'user' takes precedence over 'username' we have to check the order
+    if 'username' in param:
+        searchDict['username'] = param['username']
+    if 'user' in param:
+        searchDict['username'] = param['user']
+    log.debug('Changed search key to username: %s.', searchDict['username'])
 
     # determine which scope we want to show
     param_resolver = getParam(param, "resolver")

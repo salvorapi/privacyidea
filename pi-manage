@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 #
+# 2018-08-07 Cornelius Kölbel <cornelius.koelbel@netknights.it>
+#            Allow creation of HSM keys
 # 2017-10-08 Cornelius Kölbel <cornelius.koelbel@netknights.it>
 #            Allow cleaning up different actions with different
 #            retention times.
@@ -59,6 +61,7 @@ import contextlib
 
 import flask
 
+from privacyidea.lib.sqlutils import delete_matching_rows
 from privacyidea.lib.security.default import DefaultSecurityModule
 from privacyidea.lib.crypto import geturandom
 from privacyidea.lib.auth import (create_db_admin, list_db_admin,
@@ -83,6 +86,7 @@ from sqlalchemy.orm import sessionmaker
 from privacyidea.lib.auditmodules.sqlaudit import LogEntry
 from privacyidea.lib.audit import getAudit
 from privacyidea.lib.utils import parse_timedelta
+from privacyidea.lib.crypto import create_hsm_object
 from Crypto.PublicKey import RSA
 import jwt
 import ast
@@ -102,6 +106,7 @@ event_manager = Manager(usage='Manage events')
 api_manager = Manager(usage="Manage API keys")
 ca_manager = Manager(usage="Manage Certificate Authorities")
 audit_manager = Manager(usage="Manage Audit log")
+hsm_manager = Manager(usage="Manage HSM")
 manager.add_command('db', MigrateCommand)
 manager.add_command('admin', admin_manager)
 manager.add_command('backup', backup_manager)
@@ -112,6 +117,22 @@ manager.add_command('event', event_manager)
 manager.add_command('api', api_manager)
 manager.add_command('ca', ca_manager)
 manager.add_command('audit', audit_manager)
+manager.add_command('hsm', hsm_manager)
+
+
+@hsm_manager.command
+def create_keys():
+    """
+    Create new encryption keys on the HSM. Be sure to first setup the HSM module, the PKCS11
+    module and the slot/password for the given HSM in your pi.cfg.
+    Set the variables PI_HSM_MODULE, PI_HSM_MODULE_MODULE, PI_HSM_MODULE_SLOT, PI_HSM_MODULE_PASSWORD.
+    """
+    hsm_object = create_hsm_object(app.config)
+    r = hsm_object.create_keys()
+    print("Please add the following to your pi.cfg:")
+    print("PI_HSM_MODULE_KEY_LABEL_TOKEN = '{0}'".format(r.get("token")))
+    print("PI_HSM_MODULE_KEY_LABEL_CONFIG = '{0}'".format(r.get("config")))
+    print("PI_HSM_MODULE_KEY_LABEL_VALUE = '{0}'".format(r.get("value")))
 
 
 @ca_manager.command
@@ -515,6 +536,7 @@ class CommandOutsideRequestContext(Command):
     def __call__(self, app=None, *args, **kwargs):
         return self.run(*args, **kwargs)
 
+
 def profile(length=30, profile_dir=None):
     """
     Start the application in profiling mode.
@@ -538,16 +560,27 @@ except TypeError:
 
 
 @manager.option('--highwatermark', '--hw', help="If entries exceed this value, "
-                                        "old entries are deleted.")
+                                                "old entries are deleted.")
 @manager.option('--lowwatermark', '--lw', help="Keep this number of entries.")
 @manager.option('--age', help="Delete audit entries older than these number "
                               "of days.")
 @manager.option('--config', help="Read config from the specified yaml file.")
 @manager.option('--dryrun', help="Do not actually delete, only show "
                                  "what would be done.", action="store_true")
-@audit_manager.command
+@manager.option('--chunksize', help="Delete entries in chunks of the given size "
+                                    "to avoid deadlocks")
+@audit_manager.option('--highwatermark', '--hw', help="If entries exceed this value, "
+                                                "old entries are deleted.")
+@audit_manager.option('--lowwatermark', '--lw', help="Keep this number of entries.")
+@audit_manager.option('--age', help="Delete audit entries older than these number "
+                              "of days.")
+@audit_manager.option('--config', help="Read config from the specified yaml file.")
+@audit_manager.option('--dryrun', help="Do not actually delete, only show "
+                                 "what would be done.", action="store_true")
+@audit_manager.option('--chunksize', help="Delete entries in chunks of the given size "
+                                          "to avoid deadlocks")
 def rotate_audit(highwatermark=10000, lowwatermark=5000, age=0, config=None,
-                 dryrun=False):
+                 dryrun=False, chunksize=None):
     """
     Clean the SQL audit log.
 
@@ -571,6 +604,8 @@ def rotate_audit(highwatermark=10000, lowwatermark=5000, age=0, config=None,
     metadata = MetaData()
     highwatermark = int(highwatermark or 10000)
     lowwatermark = int(lowwatermark or 5000)
+    if chunksize is not None:
+        chunksize = int(chunksize)
 
     default_module = "privacyidea.lib.auditmodules.sqlaudit"
     token_db_uri = app.config.get("SQLALCHEMY_DATABASE_URI")
@@ -634,19 +669,17 @@ def rotate_audit(highwatermark=10000, lowwatermark=5000, age=0, config=None,
             print("If you only would let me I would clean up {0!s} entries!".format(len(delete_list)))
         else:
             print("Cleaning up {0!s} entries.".format(len(delete_list)))
-            engine.execute(LogEntry.__table__.delete().where(LogEntry.id.in_(delete_list)))
-            session.commit()
-
+            delete_matching_rows(session, LogEntry.__table__, LogEntry.id.in_(delete_list), chunksize)
     elif age:
         now = datetime.datetime.now() - datetime.timedelta(days=age)
         print("Deleting entries older than {0!s}".format(now))
-        sqlquery = session.query(LogEntry.date).filter(LogEntry.date < now)
+        criterion = LogEntry.date < now
         if dryrun:
-            r = len(sqlquery.all())
+            r = LogEntry.query.filter(criterion).count()
+            print("Would delete {0!s} entries.".format(r))
         else:
-            r = session.query(LogEntry.date).filter(LogEntry.date < now).delete()
-            session.commit()
-        print("{0!s} entries deleted.".format(r))
+            r = delete_matching_rows(session, LogEntry.__table__, criterion, chunksize)
+            print("{0!s} entries deleted.".format(r))
     else:
         count = session.query(LogEntry.id).count()
         for l in session.query(LogEntry.id).order_by(desc(LogEntry.id)).limit(1):
@@ -659,12 +692,11 @@ def rotate_audit(highwatermark=10000, lowwatermark=5000, age=0, config=None,
             cut_id = last_id - lowwatermark
             # delete all entries less than cut_id
             print("Deleting entries smaller than %i" % cut_id)
-            sqlquery = session.query(LogEntry.id).filter(LogEntry.id < cut_id)
+            criterion = LogEntry.id < cut_id
             if dryrun:
-                r = len(sqlquery.all())
+                r = LogEntry.query.filter(criterion).count()
             else:
-                r = session.query(LogEntry.id).filter(LogEntry.id < cut_id).delete()
-                session.commit()
+                r = delete_matching_rows(session, LogEntry.__table__, criterion, chunksize)
             print("{0!s} entries deleted.".format(r))
 
 
@@ -793,15 +825,28 @@ def create_internal(name):
     metadata.create_all(engine)
 
 
-@resolver_manager.command
-def list():
+@resolver_manager.option('-v', help="Verbose output - also print the configuration of the resolvers.",
+                         dest="verbose", action="store_true")
+def list(verbose):
     """
-    list the available resolvers and the type
+    list the available resolvers and the type.
     """
     from privacyidea.lib.resolver import get_resolver_list
     resolver_list = get_resolver_list()
-    for name, resolver in resolver_list.iteritems():
-        print("%16s - (%s)" % (name, resolver.get("type")))
+
+    if not verbose:
+        for name, resolver in resolver_list.iteritems():
+            print("{0!s:16} - ({1!s})".format(name, resolver.get("type")))
+    else:
+        for name, resolver in resolver_list.iteritems():
+            print("{0!s:16} - ({1!s})".format(name, resolver.get("type")))
+            print("."*32)
+            data = resolver.get("data", {})
+            for k, v in data.iteritems():
+                if k.lower() in ["bindpw", "password"]:
+                    v = "xxxxx"
+                print("{0!s:>24}: {1!r}".format(k, v))
+            print("")
 
 
 @realm_manager.command

@@ -43,10 +43,11 @@ webservice!
 """
 
 import logging
-from log import log_with
-from config import (get_resolver_types,
-                     get_resolver_class_dict)
+
+from .log import log_with
+from .config import (get_resolver_types, get_resolver_classes, update_config_object)
 from privacyidea.lib.usercache import delete_user_cache
+from privacyidea.lib.framework import get_request_local_store
 from ..models import (Resolver,
                       ResolverConfig)
 from ..api.lib.utils import required
@@ -55,8 +56,6 @@ from .error import ConfigAdminError
 from sqlalchemy import func
 from .crypto import encryptPassword, decryptPassword
 from privacyidea.lib.utils import sanity_name_check
-from flask import g
-from privacyidea.lib.config import ConfigClass
 from privacyidea.lib.utils import is_true
 #from privacyidea.lib.cache import cache
 
@@ -185,11 +184,11 @@ def get_resolver_list(filter_resolver_type=None,
     :rtype: Dictionary of the resolvers and their configuration
     """
     # We need to check if we need to update the config object
-    g.config_object = ConfigClass()
-    resolvers = g.config_object.resolver
+    config_object = update_config_object()
+    resolvers = config_object.resolver
     if filter_resolver_type:
         reduced_resolvers = {}
-        for reso_name, reso in resolvers.iteritems():
+        for reso_name, reso in resolvers.items():
             if reso.get("type") == filter_resolver_type:
                 reduced_resolvers[reso_name] = resolvers[reso_name]
         resolvers = reduced_resolvers
@@ -202,13 +201,13 @@ def get_resolver_list(filter_resolver_type=None,
     if editable is not None:
         reduced_resolvers = {}
         if editable is True:
-            for reso_name, reso in resolvers.iteritems():
+            for reso_name, reso in resolvers.items():
                 check_editable = is_true(reso["data"].get("Editable")) or \
                                  is_true(reso["data"].get("EDITABLE"))
                 if check_editable:
                     reduced_resolvers[reso_name] = resolvers[reso_name]
         elif editable is False:
-            for reso_name, reso in resolvers.iteritems():
+            for reso_name, reso in resolvers.items():
                 check_editable = is_true(reso["data"].get("Editable")) or \
                                  is_true(reso["data"].get("EDITABLE"))
                 if not check_editable:
@@ -241,9 +240,10 @@ def delete_resolver(resolvername):
         reso.delete()
         ret = reso.id
     # Delete resolver object from cache
-    if 'resolver_objects' in g:
-        if g.resolver_objects.get(resolvername):
-            del(g.resolver_objects[resolvername])
+    store = get_request_local_store()
+    if 'resolver_objects' in store:
+        if resolvername in store['resolver_objects']:
+            del store['resolver_objects'][resolvername]
 
     # Remove corresponding entries from the user cache
     delete_user_cache(resolver=resolvername)
@@ -293,21 +293,18 @@ def get_resolver_config_description(resolver_type):
 
 #@cache.memoize(10)
 def get_resolver_class(resolver_type):
-    '''
+    """
     return the class object for a resolver type
     :param resolver_type: string specifying the resolver
                           fully qualified or abreviated
     :return: resolver object class
-    '''
+    """
     ret = None
-    
-    (resolver_clazzes, resolver_types) = get_resolver_class_dict()
-
-    if resolver_type in resolver_types.values():
-        for k, v in resolver_types.items():
-            if v == resolver_type:
-                ret = resolver_clazzes.get(k)
-                break
+    resolver_clazzes = get_resolver_classes()
+    for k in resolver_clazzes:
+        if k.getResolverClassType() == resolver_type:
+            ret = k
+            break
     return ret
 
 
@@ -344,15 +341,17 @@ def get_resolver_object(resolvername):
         log.error("Can not find resolver with name {0!s} ".format(resolvername))
         return None
     else:
-        if 'resolver_objects' not in g:
-            g.resolver_objects = {}
-        if resolvername not in g.resolver_objects:
+        store = get_request_local_store()
+        if 'resolver_objects' not in store:
+            store['resolver_objects'] = {}
+        resolver_objects = store['resolver_objects']
+        if resolvername not in resolver_objects:
             # create the resolver instance and load the config
-            r_obj = g.resolver_objects[resolvername] = r_obj_class()
+            r_obj = resolver_objects[resolvername] = r_obj_class()
             if r_obj is not None:
                 resolver_config = get_resolver_config(resolvername)
                 r_obj.loadConfig(resolver_config)
-        return g.resolver_objects[resolvername]
+        return resolver_objects[resolvername]
 
 @log_with(log)
 def pretestresolver(resolvertype, params):

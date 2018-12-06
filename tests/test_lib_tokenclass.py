@@ -3,7 +3,6 @@ This test file tests the lib.tokenclass
 
 The lib.tokenclass depends on the DB model and lib.user
 """
-PWFILE = "tests/testdata/passwords"
 
 from .base import MyTestCase
 from privacyidea.lib.resolver import (save_resolver, delete_resolver)
@@ -19,7 +18,9 @@ from privacyidea.models import (Token,
                                 Challenge)
 import datetime
 from dateutil.tz import tzlocal
+import binascii
 
+PWFILE = "tests/testdata/passwords"
 
 class TokenBaseTestCase(MyTestCase):
     '''
@@ -484,7 +485,7 @@ class TokenBaseTestCase(MyTestCase):
     def test_16_init_detail(self):
         db_token = Token.query.filter_by(serial=self.serial1).first()
         token = TokenClass(db_token)
-        token.add_init_details("otpkey", "secretkey")
+        token.add_init_details("otpkey", binascii.hexlify("secretkey"))
         detail = token.get_init_detail()
         self.assertTrue("otpkey" in detail, detail)
 
@@ -620,7 +621,6 @@ class TokenBaseTestCase(MyTestCase):
         token = TokenClass(db_token)
         token_data = token.get_as_dict()
 
-        print(token_data)
         self.assertTrue("info" in token_data)
         self.assertTrue(token_data.get("user_id") == "2000")
         self.assertTrue(token_data.get("tokentype") == "newtype")

@@ -34,8 +34,9 @@ from privacyidea.lib.audit import getAudit
 from flask import current_app
 from privacyidea.lib.policy import PolicyClass
 from privacyidea.lib.event import EventConfiguration
+from privacyidea.lib.lifecycle import call_finalizers
 from privacyidea.api.auth import (user_required, admin_required)
-from privacyidea.lib.config import get_from_config, SYSCONF, ConfigClass
+from privacyidea.lib.config import get_from_config, SYSCONF, update_config_object
 from privacyidea.lib.token import get_token_type
 from .resolver import resolver_blueprint
 from .policy import policy_blueprint
@@ -63,11 +64,38 @@ from .monitoring import monitoring_blueprint
 from privacyidea.api.lib.postpolicy import postrequest, sign_response
 from ..lib.error import (privacyIDEAError,
                          AuthError, UserError,
-                         PolicyError)
+                         PolicyError, ResourceNotFoundError)
 from privacyidea.lib.utils import get_client_ip
 from privacyidea.lib.user import User
 
 log = logging.getLogger(__name__)
+
+
+# ``before_app_request`` and ``teardown_app_request`` register the functions
+# at the application, so it's sufficient to call them only for one blueprint.
+# The decorated functions are called before and after *every* request.
+@token_blueprint.before_app_request
+def log_begin_request():
+    log.debug(u"Begin handling of request {!r}".format(request.full_path))
+
+
+@token_blueprint.teardown_app_request
+def teardown_request(exc):
+    call_finalizers()
+    log.debug(u"End handling of request {!r}".format(request.full_path))
+
+
+# NOTE: This can be commented in to debug SQL pooling issues
+#@token_blueprint.before_app_request
+#def log_pools():
+#    from privacyidea.lib.pooling import get_registry
+#    from privacyidea.models import db
+#    engines = {"flask-sqlalchemy": db.engine}
+#    if hasattr(get_registry(), '_engines'):
+#        engines.update(get_registry()._engines)
+#    log.info("We have {} engines".format(len(engines)))
+#    for name, engine in engines.iteritems():
+#        log.info("engine {}: {}".format(name, engine.pool.status()))
 
 
 @token_blueprint.before_request
@@ -111,7 +139,7 @@ def before_request():
     """
     # remove session from param and gather all parameters, either
     # from the Form data or from JSON in the request body.
-    g.config_object = ConfigClass()
+    update_config_object()
     request.all_data = get_all_params(request.values, request.data)
     try:
         request.User = get_user_from_param(request.all_data)
@@ -241,7 +269,8 @@ def auth_error(error):
         g.audit_object.log({"info": error.message})
         g.audit_object.finalize_log()
     return send_error(error.message,
-                      error_code=error.id), 401
+                      error_code=error.id,
+                      details=error.details), 401
 
 
 @system_blueprint.errorhandler(PolicyError)
@@ -264,6 +293,31 @@ def policy_error(error):
         g.audit_object.log({"info": error.message})
         g.audit_object.finalize_log()
     return send_error(error.message, error_code=error.id), 403
+
+
+@system_blueprint.app_errorhandler(ResourceNotFoundError)
+@realm_blueprint.app_errorhandler(ResourceNotFoundError)
+@defaultrealm_blueprint.app_errorhandler(ResourceNotFoundError)
+@resolver_blueprint.app_errorhandler(ResourceNotFoundError)
+@policy_blueprint.app_errorhandler(ResourceNotFoundError)
+@user_blueprint.app_errorhandler(ResourceNotFoundError)
+@token_blueprint.app_errorhandler(ResourceNotFoundError)
+@audit_blueprint.app_errorhandler(ResourceNotFoundError)
+@application_blueprint.app_errorhandler(ResourceNotFoundError)
+@smtpserver_blueprint.app_errorhandler(ResourceNotFoundError)
+@register_blueprint.app_errorhandler(ResourceNotFoundError)
+@recover_blueprint.app_errorhandler(ResourceNotFoundError)
+@subscriptions_blueprint.app_errorhandler(ResourceNotFoundError)
+@postrequest(sign_response, request=request)
+def resource_not_found_error(error):
+    """
+    This function is called when an ResourceNotFoundError occurs.
+    It sends a 404.
+    """
+    if "audit_object" in g:
+        g.audit_object.log({"info": error.message})
+        g.audit_object.finalize_log()
+    return send_error(error.message, error_code=error.id), 404
 
 
 @system_blueprint.app_errorhandler(privacyIDEAError)

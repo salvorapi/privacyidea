@@ -26,6 +26,7 @@ import logging
 
 from flask import Blueprint, g, request
 
+from privacyidea.lib.config import get_privacyidea_nodes
 from privacyidea.lib.tokenclass import AUTH_DATE_FORMAT
 from privacyidea.api.lib.prepolicy import prepolicy, check_base_action
 from privacyidea.api.lib.utils import send_result, getParam
@@ -43,11 +44,13 @@ periodictask_blueprint = Blueprint('periodictask_blueprint', __name__)
 
 def convert_datetimes_to_string(ptask):
     """
-    Convert the ``last_runs`` timestamps to ISO 8601 strings and return a copy of ``ptask``.
+    Convert the ``last_update`` and ``last_runs`` timestamps to ISO 8601 strings and return a copy of ``ptask``.
+
     :param ptask: periodic task dictionary
     :return: a new periodic task dictionary
     """
     ptask = ptask.copy()
+    ptask['last_update'] = ptask['last_update'].strftime(AUTH_DATE_FORMAT)
     ptask['last_runs'] = dict((node, timestamp.strftime(AUTH_DATE_FORMAT))
                               for node, timestamp in ptask['last_runs'].items())
     return ptask
@@ -64,11 +67,23 @@ def list_taskmodules():
     return send_result(taskmodules)
 
 
+@periodictask_blueprint.route('/nodes/', methods=['GET'])
+@log_with(log)
+def list_nodes():
+    """
+    Return a list of available nodes
+    """
+    nodes = get_privacyidea_nodes()
+    g.audit_object.log({"success": True})
+    return send_result(nodes)
+
+
 @periodictask_blueprint.route('/options/<taskmodule>', methods=['GET'])
 @log_with(log)
 def get_taskmodule_options(taskmodule):
     """
     Return the available options for the given taskmodule.
+
     :param taskmodule: Identifier of the task module
     :return: a dictionary mapping option keys to description dictionaries
     """
@@ -94,6 +109,7 @@ def list_periodic_tasks():
 def get_periodic_task_api(ptaskid):
     """
     Return the dictionary describing a periodic task.
+
     :param ptaskid: ID of the periodic task
     """
     ptask = get_periodic_task_by_id(int(ptaskid))
@@ -114,6 +130,7 @@ def set_periodic_task_api():
     :param interval: Interval at which the periodic task should run (in cron syntax)
     :param nodes: Comma-separated list of nodes on which the periodic task should run
     :param taskmodule: Task module name of the task
+    :param ordering: Ordering of the task, must be a number >= 0.
     :param options: A dictionary (possibly JSON) of periodic task options, mapping unicodes to unicodes
     :return: ID of the periodic task
     """
@@ -125,10 +142,14 @@ def set_periodic_task_api():
     active = is_true(getParam(param, "active", default=True))
     interval = getParam(param, "interval", optional=False)
     node_string = getParam(param, "nodes", optional=False)
-    node_list = [node.strip() for node in node_string.split(",")]
+    if node_string.strip():
+        node_list = [node.strip() for node in node_string.split(",")]
+    else:
+        raise ParameterError(u"nodes: expected at least one node")
     taskmodule = getParam(param, "taskmodule", optional=False)
     if taskmodule not in get_available_taskmodules():
         raise ParameterError("Unknown task module: {!r}".format(taskmodule))
+    ordering = int(getParam(param, "ordering", optional=False))
     options = getParam(param, "options", optional=True)
     if options is None:
         options = {}
@@ -136,7 +157,7 @@ def set_periodic_task_api():
         options = json.loads(options)
         if not isinstance(options, dict):
             raise ParameterError(u"options: expected dictionary, got {!r}".format(options))
-    result = set_periodic_task(name, interval, node_list, taskmodule, options, active, ptask_id)
+    result = set_periodic_task(name, interval, node_list, taskmodule, ordering, options, active, ptask_id)
     g.audit_object.log({"success": True, "info": result})
     return send_result(result)
 
@@ -147,6 +168,7 @@ def set_periodic_task_api():
 def enable_periodic_task_api(ptaskid):
     """
     Enable a certain periodic task.
+
     :param ptaskid: ID of the periodic task
     :return: ID of the periodic task
     """
@@ -161,6 +183,7 @@ def enable_periodic_task_api(ptaskid):
 def disable_periodic_task_api(ptaskid):
     """
     Disable a certain periodic task.
+
     :param ptaskid: ID of the periodic task
     :return: ID of the periodic task
     """
@@ -175,6 +198,7 @@ def disable_periodic_task_api(ptaskid):
 def delete_periodic_task_api(ptaskid):
     """
     Delete a certain periodic task.
+
     :param ptaskid: ID of the periodic task
     :return: ID of the periodic task
     """
